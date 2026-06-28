@@ -1,0 +1,120 @@
+app 0 [000] 0.001000: 24 cpu-clock:
+	0 handler.h0 (app.so)
+	0 svc.dispatch (app.so)
+	0 main (app.so)
+
+app 0 [000] 0.002000: 23 cpu-clock:
+	0 handler.h1 (app.so)
+	0 svc.dispatch (app.so)
+	0 main (app.so)
+
+app 0 [000] 0.003000: 22 cpu-clock:
+	0 handler.h2 (app.so)
+	0 svc.dispatch (app.so)
+	0 main (app.so)
+
+app 0 [000] 0.004000: 21 cpu-clock:
+	0 handler.h3 (app.so)
+	0 svc.dispatch (app.so)
+	0 main (app.so)
+
+app 0 [000] 0.005000: 20 cpu-clock:
+	0 handler.h4 (app.so)
+	0 svc.dispatch (app.so)
+	0 main (app.so)
+
+app 0 [000] 0.006000: 19 cpu-clock:
+	0 handler.h5 (app.so)
+	0 svc.dispatch (app.so)
+	0 main (app.so)
+
+app 0 [000] 0.007000: 18 cpu-clock:
+	0 handler.h6 (app.so)
+	0 svc.dispatch (app.so)
+	0 main (app.so)
+
+app 0 [000] 0.008000: 17 cpu-clock:
+	0 handler.h7 (app.so)
+	0 svc.dispatch (app.so)
+	0 main (app.so)
+
+app 0 [000] 0.009000: 16 cpu-clock:
+	0 handler.h8 (app.so)
+	0 svc.dispatch (app.so)
+	0 main (app.so)
+
+app 0 [000] 0.010000: 15 cpu-clock:
+	0 handler.h9 (app.so)
+	0 svc.dispatch (app.so)
+	0 main (app.so)
+
+app 0 [000] 0.011000: 14 cpu-clock:
+	0 handler.h10 (app.so)
+	0 svc.dispatch (app.so)
+	0 main (app.so)
+
+app 0 [000] 0.012000: 13 cpu-clock:
+	0 handler.h11 (app.so)
+	0 svc.dispatch (app.so)
+	0 main (app.so)
+
+app 0 [000] 0.013000: 12 cpu-clock:
+	0 handler.h12 (app.so)
+	0 svc.dispatch (app.so)
+	0 main (app.so)
+
+app 0 [000] 0.014000: 11 cpu-clock:
+	0 handler.h13 (app.so)
+	0 svc.dispatch (app.so)
+	0 main (app.so)
+
+app 0 [000] 0.015000: 10 cpu-clock:
+	0 handler.h14 (app.so)
+	0 svc.dispatch (app.so)
+	0 main (app.so)
+
+app 0 [000] 0.016000: 9 cpu-clock:
+	0 handler.h15 (app.so)
+	0 svc.dispatch (app.so)
+	0 main (app.so)
+
+app 0 [000] 0.017000: 8 cpu-clock:
+	0 handler.h16 (app.so)
+	0 svc.dispatch (app.so)
+	0 main (app.so)
+
+app 0 [000] 0.018000: 7 cpu-clock:
+	0 handler.h17 (app.so)
+	0 svc.dispatch (app.so)
+	0 main (app.so)
+
+app 0 [000] 0.019000: 6 cpu-clock:
+	0 handler.h18 (app.so)
+	0 svc.dispatch (app.so)
+	0 main (app.so)
+
+app 0 [000] 0.020000: 5 cpu-clock:
+	0 handler.h19 (app.so)
+	0 svc.dispatch (app.so)
+	0 main (app.so)
+
+app 0 [000] 0.021000: 4 cpu-clock:
+	0 handler.h20 (app.so)
+	0 svc.dispatch (app.so)
+	0 main (app.so)
+
+app 0 [000] 0.022000: 3 cpu-clock:
+	0 handler.h21 (app.so)
+	0 svc.dispatch (app.so)
+	0 main (app.so)
+
+app 0 [000] 0.023000: 2 cpu-clock:
+	0 handler.h22 (app.so)
+	0 svc.dispatch (app.so)
+	0 main (app.so)
+
+app 0 [000] 0.024000: 1 cpu-clock:
+	0 handler.h23 (app.so)
+	0 svc.dispatch (app.so)
+	0 main (app.so)
+

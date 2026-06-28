@@ -1,0 +1,5 @@
+# generated test artifacts (SVG/PNG proofs from test/verify.ts)
+test/out/
+
+# macOS
+.DS_Store

@@ -1,0 +1,520 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>spicypath — profile inspector</title>
+  <style>
+    /* Theme vars (FG-040) — defaults are the dark baseline; JS overrides from the active
+       Ghostty theme via applyThemeVars(). Chrome reads only these, so a theme swap recolors
+       everything (canvas colors come from src/theme.js tokens, in parallel). */
+    :root {
+      --bg: #1e1e2e; --bg2: #1c1c2a; --panel: #2a2a3a; --fg: #cdd6f4;
+      --dim: #8389a8; --faint: #6a708c; --line: #34344a; --accent: #89b4fa; --on-accent: #11111b;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; padding-top: 28px; background: var(--bg); color: var(--fg); font: 13px Helvetica, Arial, sans-serif; overflow: hidden; }
+    #cv { display: block; width: 100%; }
+    /* status strip — the single persistent surface, pinned top (clears the macOS fullscreen edge) */
+    #statusbar { position: fixed; left: 0; right: 0; top: 0; height: 28px; display: flex; align-items: center; gap: 8px; padding: 0 8px; background: var(--bg2); border-bottom: 1px solid var(--line); font-size: 12px; z-index: 6; }
+    #modes { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+    #modes button { background: var(--panel); color: var(--fg); border: 0; border-left: 1px solid var(--line); padding: 2px 9px; font: inherit; cursor: pointer; }
+    #modes button:first-child { border-left: 0; }
+    #modes button.active { background: var(--accent); color: var(--on-accent); }
+    #modes button:disabled { opacity: 0.4; cursor: not-allowed; }
+    .tok { cursor: pointer; padding: 2px 7px; border-radius: 5px; border: 1px solid var(--line); color: var(--fg); white-space: nowrap; }
+    .tok:hover { border-color: var(--accent); }
+    #st-diff { background: #3d2230; border-color: #7a3b52; color: #e6a6ba; }
+    #info { color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #actions { margin-left: auto; display: flex; gap: 6px; align-items: center; }
+    #actions button, #actions select, #actions input[type=search] { background: var(--line); color: var(--fg); border: 1px solid var(--line); border-radius: 5px; padding: 2px 7px; font: inherit; }
+    #actions button:hover, #actions select:hover { border-color: var(--accent); }
+    #actions label { color: var(--dim); }
+    /* floating overlays over the full-bleed canvas */
+    #tt { position: fixed; display: none; background: var(--panel); border: 1px solid var(--line); padding: 6px 9px; font: 12px Menlo, monospace; border-radius: 6px; pointer-events: none; z-index: 8; }
+    #legend { position: fixed; left: 8px; bottom: 8px; display: none; flex-wrap: wrap; gap: 5px 12px; align-items: center; max-width: 60vw; padding: 5px 9px; font-size: 11px; color: var(--dim); background: var(--bg2); border: 1px solid var(--line); border-radius: 7px; z-index: 4; pointer-events: none; }
+    #legend.on { display: flex; } /* on-demand (FG-037): toggle with the 'colors' token or 'l' */
+    #detail { position: fixed; right: 0; bottom: 0; width: min(420px, 92vw); max-height: 48vh; overflow: auto; display: none; flex-direction: column; gap: 14px; padding: 12px 14px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px 0 0 0; box-shadow: 0 8px 30px rgba(0,0,0,0.45); z-index: 7; font-size: 12px; }
+    #detail.on { display: flex; }
+    #detail .dcol .dh { color: var(--dim); font-weight: bold; margin-bottom: 3px; }
+    #detail .dstack { max-height: 32vh; overflow: auto; font: 11px Menlo, monospace; }
+    #detail .dstack > div { white-space: nowrap; }
+    #detail .chip { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 5px; vertical-align: middle; }
+    #drop { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; background: rgba(31,111,235,0.12); border: 3px dashed var(--accent); z-index: 10; font-size: 18px; color: var(--fg); pointer-events: none; }
+    #drop.on { display: flex; }
+    #empty { position: fixed; inset: 28px 0 0 0; display: flex; align-items: center; justify-content: center; color: var(--faint); font-size: 15px; pointer-events: none; }
+    #ctxmenu { position: fixed; display: none; min-width: 168px; max-width: 260px; padding: 4px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 8px 30px rgba(0,0,0,0.5); z-index: 9; font-size: 12px; }
+    #ctxmenu.on { display: block; }
+    #ctxmenu .mh { color: var(--dim); padding: 4px 9px 6px; border-bottom: 1px solid var(--line); margin-bottom: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    #ctxmenu button { display: block; width: 100%; text-align: left; background: none; border: 0; color: var(--fg); padding: 5px 9px; border-radius: 5px; font: inherit; cursor: pointer; }
+    #ctxmenu button:hover { background: var(--accent); color: var(--on-accent); }
+    #hintk { color: var(--faint); cursor: pointer; padding: 2px 7px; border-radius: 5px; white-space: nowrap; }
+    #hintk:hover { color: var(--fg); }
+    #st-theme { margin-left: auto; } /* pushes the right-hand affordance group to the edge */
+    #theme-picker { position: fixed; display: none; min-width: 200px; max-height: 260px; overflow-y: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 8px 30px rgba(0,0,0,0.5); z-index: 12; padding: 4px; font-size: 12px; }
+    #theme-picker.on { display: block; }
+    #theme-picker .tp-row { padding: 5px 9px; border-radius: 5px; cursor: pointer; white-space: nowrap; color: var(--fg); }
+    #theme-picker .tp-row:hover { background: var(--accent); color: var(--on-accent); }
+    #theme-picker .tp-row.cur { color: var(--accent); font-weight: 600; }
+    /* help overlay (?) */
+    #help { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; background: rgba(0,0,0,0.45); z-index: 11; }
+    #help.on { display: flex; }
+    #help .box { width: min(520px, 92vw); background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px; box-shadow: 0 16px 50px rgba(0,0,0,0.55); font-size: 13px; color: var(--fg); }
+    #help h3 { margin: 0 0 12px; font-size: 14px; color: var(--fg); }
+    #help dl { display: grid; grid-template-columns: auto 1fr; gap: 7px 16px; margin: 0; }
+    #help dt { color: var(--dim); white-space: nowrap; font: 12px Menlo, Consolas, monospace; }
+    /* first-run coachmark */
+    #coach { position: fixed; bottom: 38px; left: 50%; transform: translateX(-50%); display: none; background: var(--accent); color: var(--on-accent); padding: 8px 14px; border-radius: 8px; font-size: 12px; box-shadow: 0 8px 24px rgba(0,0,0,0.4); z-index: 8; }
+    #coach.on { display: block; }
+    /* floating search pill (⌘F or /) */
+    #searchpill { position: fixed; top: 36px; right: 10px; display: none; align-items: center; gap: 8px; padding: 5px 10px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 6px 24px rgba(0,0,0,0.45); z-index: 9; }
+    #searchpill.on { display: flex; }
+    #searchpill input { background: var(--bg); color: var(--fg); border: 1px solid var(--line); border-radius: 6px; padding: 3px 8px; font: inherit; }
+    #searchpill #searchInfo { color: var(--dim); font-size: 11px; white-space: nowrap; }
+    /* command palette (⌘K) */
+    #palette { position: fixed; inset: 0; display: none; align-items: flex-start; justify-content: center; background: rgba(0,0,0,0.35); z-index: 11; }
+    #palette.on { display: flex; }
+    #palette .box { margin-top: 12vh; width: min(560px, 92vw); background: var(--panel); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 16px 50px rgba(0,0,0,0.55); overflow: hidden; }
+    #pal-input { width: 100%; box-sizing: border-box; background: var(--bg); color: var(--fg); border: 0; border-bottom: 1px solid var(--line); padding: 11px 14px; font: 14px Helvetica, Arial, sans-serif; outline: none; }
+    #pal-list { max-height: 50vh; overflow: auto; padding: 5px; }
+    #pal-list .row { padding: 7px 11px; border-radius: 6px; color: var(--fg); font-size: 13px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    #pal-list .row.sel { background: var(--accent); color: var(--on-accent); }
+    #pal-list .empty { padding: 10px 12px; color: var(--faint); font-size: 12px; }
+    /* live /debug/pprof connect overlay (FG-028) */
+    #connect { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; background: rgba(0,0,0,0.4); z-index: 11; }
+    #connect.on { display: flex; }
+    #connect .box { width: min(480px, 92vw); background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 18px 20px; box-shadow: 0 16px 50px rgba(0,0,0,0.55); }
+    #connect h3 { margin: 0 0 14px; font-size: 14px; color: var(--fg); }
+    #connect label { display: block; font-size: 11px; color: var(--dim); margin-bottom: 4px; }
+    #connect input { width: 100%; background: var(--bg); color: var(--fg); border: 1px solid var(--line); border-radius: 6px; padding: 6px 9px; font: 13px Menlo, Consolas, monospace; box-sizing: border-box; outline: none; margin-bottom: 10px; }
+    #connect input:focus { border-color: var(--accent); }
+    #connect .row { display: flex; gap: 8px; align-items: center; margin-top: 4px; }
+    #connect .row label { margin: 0; white-space: nowrap; }
+    #connect .row input { width: 64px; margin: 0; }
+    #connect .btns { display: flex; gap: 8px; margin-top: 14px; justify-content: flex-end; }
+    #connect button { padding: 5px 14px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel); color: var(--fg); font: inherit; cursor: pointer; }
+    #connect button.primary { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+    #st-live { display: none; background: #1a4a2e; border-color: #2d7a4f; color: #4ade80; }
+  </style>
+</head>
+<body>
+  <canvas id="cv"></canvas>
+  <div id="legend"></div>
+  <div id="detail"></div>
+  <div id="tt"></div>
+  <div id="ctxmenu"></div>
+  <div id="empty">drop a profile  ·  ⌘K commands  ·  ⌘F search</div>
+  <div id="drop">drop a profile — pprof · .cpuprofile · folded · speedscope (.gz ok)</div>
+
+  <div id="statusbar">
+    <span id="modes">
+      <button id="m-chart" data-mode="chart">Timeline</button>
+      <button id="m-graph" data-mode="graph">Aggregated</button>
+      <button id="m-sandwich" data-mode="sandwich">Sandwich</button>
+    </span>
+    <span class="tok" id="st-viewtype" title="view type — click to cycle (flame ⇄ radial)">flame</span>
+    <span class="tok" id="st-weight" title="weight type — click to cycle">—</span>
+    <span class="tok" id="st-diff" title="diff vs baseline — click to exit" style="display:none">diff</span>
+    <span id="info"></span>
+    <span class="tok" id="st-live" title="live pprof — click to refetch">live</span>
+    <span class="tok" id="st-collapse" title="toggle auto-collapse (c)">collapse ✓</span>
+    <span class="tok" id="st-theme" title="theme picker (t/T to cycle)">—</span>
+    <span class="tok" id="st-legend" title="color legend (l)">legend</span>
+    <span class="tok" id="st-help" title="keyboard &amp; gestures (?)">?</span>
+    <span id="hintk" title="command palette (⌘K) · search (⌘F)">⌘K</span>
+    <!-- hidden functional elements; commands live in the ⌘K palette (FG-036) -->
+    <select id="wt" hidden></select>
+    <input id="file" type="file" hidden>
+    <input id="file2" type="file" hidden>
+  </div>
+
+  <div id="searchpill"><input id="search" type="search" placeholder="search (regex)" size="20"><span id="searchInfo"></span></div>
+  <div id="palette"><div class="box"><input id="pal-input" placeholder="type a command…   (Esc to close)" autocomplete="off"><div id="pal-list"></div></div></div>
+  <div id="help"><div class="box"><h3>Keyboard &amp; gestures</h3><dl>
+    <dt>⌘K</dt><dd>command palette</dd>
+    <dt>⌘F · /</dt><dd>search frames (regex)</dd>
+    <dt>1 · 2 · 3</dt><dd>Timeline · Aggregated · Sandwich</dd>
+    <dt>c</dt><dd>toggle auto-collapse</dd>
+    <dt>l</dt><dd>toggle color legend</dd>
+    <dt>t · T</dt><dd>cycle themes next · prev · click the theme token for the full picker</dd>
+    <dt>double-click</dt><dd>zoom into a frame · center / empty to zoom out</dd>
+    <dt>ctrl / right-click</dt><dd>frame menu: focus · sandwich · search · copy stack</dd>
+    <dt>⌘-scroll · pinch</dt><dd>zoom about the cursor</dd>
+    <dt>scroll</dt><dd>pan stack depth · shift-scroll pans time</dd>
+    <dt>drag minimap</dt><dd>crop / pan the view</dd>
+    <dt>Esc</dt><dd>dismiss overlay · reset zoom</dd>
+  </dl></div></div>
+  <div id="coach"></div>
+  <div id="theme-picker"></div>
+  <div id="connect">
+    <div class="box">
+      <h3>Connect to live /debug/pprof</h3>
+      <label>Endpoint URL</label>
+      <input id="cn-url" type="url" value="http://localhost:6060/debug/pprof/profile" spellcheck="false">
+      <div class="row">
+        <label>Sample duration</label>
+        <input id="cn-sec" type="number" min="1" max="60" value="5">
+        <span style="color:var(--dim);font-size:12px">seconds</span>
+      </div>
+      <div class="btns">
+        <button id="cn-cancel">Cancel</button>
+        <button id="cn-fetch" class="primary">Fetch profile</button>
+      </div>
+    </div>
+  </div>
+
+  <script type="module">
+    import { FlameView } from './render-canvas.js';
+    import { RadialView } from './view-radial.js';
+    import { ingestFile, ingestBytes } from './ingest.js';
+    import { exportSpeedscope, exportFolded } from './export.js';
+    import { buildDiff } from './diff.js';
+    import { renderSVG } from './render-svg.js';
+    import { layout } from './layout.js';
+    import { buildCallNodeTable } from './callnode.js';
+    import { setTheme, listThemes, getThemeName, getTokens, luminance } from './theme.js';
+    import { fetchPprof } from './fetch-pprof.js';
+
+    const cv = document.getElementById('cv');
+    const wtSel = document.getElementById('wt');
+    const bGraph = document.getElementById('m-graph'), bChart = document.getElementById('m-chart'), bSand = document.getElementById('m-sandwich');
+    const searchEl = document.getElementById('search'), info = document.getElementById('info');
+    const detail = document.getElementById('detail'), stWeight = document.getElementById('st-weight'), stDiff = document.getElementById('st-diff'), stView = document.getElementById('st-viewtype');
+    const showDetail = (b) => detail.classList.toggle('on', !!b); // slide-over on frame-select
+    const VIEWS = { flame: FlameView, radial: RadialView }; // view-type registry (FG-038/039)
+    const SAMPLES = [['vert.x (real · timed · deep)', 'samples/real-vertx.speedscope.json'], ['Node CPU (timed · simple)', 'samples/node.cpuprofile'], ['pprof (multi-metric)', 'samples/multi-value.pprof'], ['5k samples (scale)', 'samples/scale-5000.cpuprofile']];
+    let view, profile, mode = 'graph', fileLabel = '', viewType = 'flame', collapsed = true;
+
+    // FG-040: push the active theme's tokens into the chrome's CSS vars (canvas colors come
+    // from src/theme.js + colors.js directly). applyTheme() also persists + recolors the view.
+    function applyThemeVars(tok) {
+      const r = document.documentElement.style;
+      r.setProperty('--bg', tok.bg); r.setProperty('--bg2', tok.bg2); r.setProperty('--panel', tok.panel);
+      r.setProperty('--fg', tok.fg); r.setProperty('--dim', tok.dim); r.setProperty('--faint', tok.faint);
+      r.setProperty('--line', tok.line); r.setProperty('--accent', tok.accent);
+      r.setProperty('--on-accent', luminance(tok.accent) > 0.55 ? '#11111b' : '#ffffff');
+      document.documentElement.style.colorScheme = tok.dark ? 'dark' : 'light';
+    }
+    const stTheme = document.getElementById('st-theme');
+    function applyTheme(name) {
+      if (!setTheme(name)) return;
+      try { localStorage.setItem('fv-theme', name); } catch { /* private mode */ }
+      applyThemeVars(getTokens());
+      stTheme.textContent = name;
+      if (view) view.refreshTheme();
+    }
+
+    function setMode(m) {
+      if (m === 'chart' && !profile.capabilities.hasTiming) return;
+      mode = m;
+      bGraph.classList.toggle('active', m === 'graph');
+      bChart.classList.toggle('active', m === 'chart');
+      bSand.classList.toggle('active', m === 'sandwich');
+      showDetail(false);
+      if (view && view.mode === 'diff') rebuild(); else view.setMode(m); // leaving diff needs a fresh view from the original profile
+      syncCollapseToken();
+      updateInfo();
+    }
+    function rebuild() { if (view) view.dispose(); const V = VIEWS[viewType] || FlameView; view = new V(cv, profile, wtSel.value, mode, { onSelect: showDetail }); view.collapse = collapsed; view.setSearch(searchEl.value); window.__fv = view; /* test handle (test/browser.ts) */ }
+    function applyCaps() { // disable mode buttons the active view type can't do
+      const caps = (VIEWS[viewType].capabilities || { modes: ['graph', 'chart', 'sandwich'] }).modes;
+      bChart.disabled = !caps.includes('chart') || !(profile && profile.capabilities.hasTiming);
+      bSand.disabled = !caps.includes('sandwich');
+      stView.textContent = viewType;
+    }
+    function setViewType(t) {
+      if (!VIEWS[t] || !profile) return;
+      viewType = t;
+      const caps = (VIEWS[t].capabilities || { modes: ['graph', 'chart', 'sandwich'] }).modes;
+      if (!caps.includes(mode)) mode = 'graph'; // coerce to a supported mode (also exits diff — rebuild is from the original profile)
+      applyCaps(); rebuild(); setMode(mode); updateInfo();
+    }
+    function updateInfo() {
+      stWeight.textContent = wtSel.value || '—';
+      const isDiff = view && view.mode === 'diff';
+      stDiff.style.display = isDiff ? '' : 'none';
+      if (!view || !profile || isDiff) return; // diff keeps its own "diff vs …" label (set on compare)
+      const t = profile.capabilities.hasTiming ? 'timed' : 'aggregated';
+      info.textContent = `${fileLabel} · ${t} · ${profile.stackTable.frame.length} nodes · ${view.totalLabel()} total`;
+    }
+    function resetView() {
+      if (!profile) return;
+      mode = 'graph';
+      searchEl.value = '';
+      collapsed = true; syncCollapseToken();
+      wtSel.value = profile.capabilities.weightTypes.includes('cpu_nanos') ? 'cpu_nanos' : profile.capabilities.weightTypes[0];
+      rebuild();
+      applyCaps(); // keep mode-button enabled-state in sync with the active view type
+      setMode('graph');
+      detail.innerHTML = ''; showDetail(false);
+      document.getElementById('searchInfo').textContent = '';
+      updateInfo();
+    }
+
+    function loadProfile(p, label) {
+      profile = p;
+      fileLabel = label;
+      document.getElementById('empty').style.display = 'none';
+      wtSel.innerHTML = p.capabilities.weightTypes.map((t) => `<option>${t}</option>`).join('');
+      wtSel.value = p.capabilities.weightTypes.includes('cpu_nanos') ? 'cpu_nanos' : p.capabilities.weightTypes[0];
+      if (mode === 'chart' && !p.capabilities.hasTiming) mode = 'graph';
+      rebuild();
+      applyCaps();
+      setMode(mode);
+      updateInfo();
+      showCoach();
+    }
+
+    async function loadSample(path) {
+      const url = path; if (!url) return;
+      const name = url.split('/').pop();
+      info.textContent = `loading ${name}…`;
+      try { const b = new Uint8Array(await (await fetch(url)).arrayBuffer()); loadProfile(await ingestBytes(name, b), name); }
+      catch (e) { info.textContent = `drop a profile to begin (${e.message})`; }
+    }
+    async function openFile(f) {
+      info.textContent = `loading ${f.name}…`;
+      try { loadProfile(await ingestFile(f), f.name); }
+      catch (e) { info.textContent = `failed to load ${f.name}: ${e.message}`; }
+    }
+
+    bGraph.onclick = () => setMode('graph');
+    bChart.onclick = () => setMode('chart');
+    bSand.onclick = () => setMode('sandwich');
+    searchEl.oninput = () => { if (view) view.setSearch(searchEl.value); };
+    function download(name, content, type) { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([content], { type })); a.download = name; a.click(); URL.revokeObjectURL(a.href); }
+    function doExport(kind) {
+      if (!profile) return;
+      const wt = wtSel.value;
+      if (kind === 'speedscope') download('profile.speedscope.json', exportSpeedscope(profile, wt), 'application/json');
+      else if (kind === 'folded') download('profile.folded', exportFolded(profile, wt), 'text/plain');
+      else if (kind === 'svg') { const ct = buildCallNodeTable(profile, 0, wt); const boxes = layout(ct, { width: 1400, minWidth: 0.5, collapse: true }); download('profile.svg', renderSVG(boxes, profile, { width: 1400, title: 'flame graph export' }), 'image/svg+xml'); }
+    }
+    function toggleCollapse() { collapsed = !collapsed; if (view) view.setCollapse(collapsed); syncCollapseToken(); }
+    function syncCollapseToken() {
+      const el = document.getElementById('st-collapse'); if (!el) return;
+      const applicable = mode !== 'chart'; // collapse has no effect in Timeline
+      el.textContent = applicable ? (collapsed ? 'collapse ✓' : 'collapse ✗') : 'collapse';
+      el.style.opacity = applicable ? '' : '0.4';
+      el.style.pointerEvents = applicable ? '' : 'none';
+    }
+    function setWeight(wt) { if (!profile || wtSel.value === wt) return; wtSel.value = wt; rebuild(); setMode(mode); updateInfo(); }
+    stWeight.onclick = () => { if (!profile) return; const opts = profile.capabilities.weightTypes; if (opts.length < 2) return; setWeight(opts[(opts.indexOf(wtSel.value) + 1) % opts.length]); };
+    stDiff.onclick = () => resetView();
+    stView.onclick = () => { const k = Object.keys(VIEWS); setViewType(k[(k.indexOf(viewType) + 1) % k.length]); };
+    document.getElementById('file').onchange = (e) => e.target.files[0] && openFile(e.target.files[0]);
+    document.getElementById('file2').onchange = async (e) => {
+      const f = e.target.files[0]; if (!f || !profile) return;
+      try {
+        const B = await ingestFile(f);
+        view.showDiff(buildDiff(profile, B, wtSel.value, B.capabilities.weightTypes[0]));
+        [bGraph, bChart, bSand].forEach((b) => b.classList.remove('active'));
+        searchEl.value = ''; document.getElementById('searchInfo').textContent = ''; // diff cleared the view's search
+        showDetail(false);
+        info.textContent = `diff vs ${f.name}`;
+        updateInfo(); // reveal the diff token
+      } catch (err) { info.textContent = `compare failed: ${err.message}`; }
+    };
+
+    // FG-028: live /debug/pprof connect
+    let liveSource = null; // { url, seconds } when a live source is active
+    const connectOverlay = document.getElementById('connect');
+    const cnUrl = document.getElementById('cn-url');
+    const cnSec = document.getElementById('cn-sec');
+    const stLive = document.getElementById('st-live');
+    function openConnect() { connectOverlay.classList.add('on'); cnUrl.focus(); cnUrl.select(); }
+    function closeConnect() { connectOverlay.classList.remove('on'); }
+    async function doFetchPprof(url, seconds) {
+      const label = new URL(url).host;
+      info.textContent = `fetching ${label} (${seconds}s)…`;
+      try {
+        const p = await fetchPprof(url, { seconds: +seconds });
+        liveSource = { url, seconds };
+        stLive.style.display = '';
+        stLive.title = `live: ${url} — click to refetch`;
+        loadProfile(p, label);
+      } catch (e) {
+        info.textContent = `live fetch failed: ${e.message}`;
+        console.error('[FG-028]', e);
+      }
+    }
+    document.getElementById('cn-fetch').onclick = () => { closeConnect(); doFetchPprof(cnUrl.value.trim(), cnSec.value); };
+    document.getElementById('cn-cancel').onclick = closeConnect;
+    connectOverlay.onmousedown = (e) => { if (e.target === connectOverlay) closeConnect(); };
+    cnUrl.onkeydown = cnSec.onkeydown = (e) => { if (e.key === 'Enter') { closeConnect(); doFetchPprof(cnUrl.value.trim(), cnSec.value); } else if (e.key === 'Escape') { closeConnect(); e.stopPropagation(); } };
+    stLive.onclick = () => { if (liveSource) doFetchPprof(liveSource.url, liveSource.seconds); };
+
+    // test hook (test/browser.ts fuzzer) — drives transitions without file dialogs
+    window.__app = {
+      setMode, setViewType, resetView, loadSample, setTheme: applyTheme, listThemes,
+      fetchPprofUrl: (url, seconds = 5) => doFetchPprof(url, seconds),
+      setSearch: (q) => { searchEl.value = q; if (view) view.setSearch(q); },
+      diffWith: async (path) => {
+        const b = new Uint8Array(await (await fetch(path)).arrayBuffer());
+        const B = await ingestBytes(path.split('/').pop(), b);
+        view.showDiff(buildDiff(profile, B, wtSel.value, B.capabilities.weightTypes[0]));
+        searchEl.value = ''; document.getElementById('searchInfo').textContent = '';
+        showDetail(false); info.textContent = `diff vs ${path.split('/').pop()}`; updateInfo();
+      },
+    };
+
+    // FG-035: right-click frame context menu (calls the view's public action API)
+    function sandwichThis(func) {
+      mode = 'sandwich';
+      if (viewType !== 'flame') viewType = 'flame'; // sandwich is a flame-shell mode
+      rebuild();                 // fresh flame view in sandwich mode (focal not built yet)
+      view.sandwichFunc(func);   // build the sandwich on the chosen function
+      bGraph.classList.remove('active'); bChart.classList.remove('active'); bSand.classList.add('active');
+      applyCaps(); showDetail(false); updateInfo();
+    }
+    const menu = document.getElementById('ctxmenu');
+    const hideMenu = () => menu.classList.remove('on');
+    cv.addEventListener('contextmenu', (e) => {
+      if (!view) return;
+      e.preventDefault();
+      const r = cv.getBoundingClientRect(), px = e.clientX - r.left, py = e.clientY - r.top;
+      if (view._hasMinimap() && py < view.contentTop) { hideMenu(); return; } // over minimap/axis chrome
+      const b = view._hit(px, py);
+      if (!b) { hideMenu(); return; }
+      const name = view.frameLabel(b);
+      menu.replaceChildren();
+      const h = document.createElement('div'); h.className = 'mh'; h.textContent = name; menu.appendChild(h);
+      const add = (label, fn) => { const btn = document.createElement('button'); btn.textContent = label; btn.onclick = () => { hideMenu(); fn(); }; menu.appendChild(btn); };
+      add(view.mode === 'sandwich' ? 'Re-center here' : view.mode === 'chart' ? 'Zoom to span' : 'Focus subtree', () => { view.focusBox(b); updateInfo(); });
+      add('Sandwich this', () => sandwichThis(b.func));
+      add('Search this frame', () => { const q = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); searchEl.value = q; view.setSearch(q); });
+      add('Copy stack', () => { try { navigator.clipboard.writeText(view.frameStack(b).join(';')); } catch { /* ignore */ } });
+      menu.style.left = Math.min(e.clientX, window.innerWidth - 210) + 'px';
+      menu.style.top = Math.min(e.clientY, window.innerHeight - 150) + 'px';
+      menu.classList.add('on');
+    });
+    // dismiss on any mousedown outside the menu (mousedown precedes the opening contextmenu,
+    // so the opening Ctrl/right-click can't close it; clicks on menu items still register)
+    document.addEventListener('mousedown', (e) => { if (!menu.contains(e.target)) hideMenu(); });
+    window.addEventListener('blur', hideMenu);
+
+    // FG-036: command palette (⌘K) — every former-toolbar command, fuzzy-filtered
+    const palette = document.getElementById('palette'), palInput = document.getElementById('pal-input'), palList = document.getElementById('pal-list');
+    let palCmds = [], palSel = 0, palCurrent = [];
+    function paletteCommands() {
+      const c = [];
+      c.push(['Open profile…', () => document.getElementById('file').click()]);
+      c.push(['Connect to live /debug/pprof…', () => openConnect()]);
+      if (liveSource) c.push(['Refetch live profile', () => doFetchPprof(liveSource.url, liveSource.seconds)]);
+      c.push(['Compare profile…', () => document.getElementById('file2').click()]);
+      for (const [label, path] of SAMPLES) c.push(['Sample: ' + label, () => loadSample(path)]);
+      c.push(['Mode: Timeline', () => setMode('chart')]);
+      c.push(['Mode: Aggregated', () => setMode('graph')]);
+      c.push(['Mode: Sandwich', () => setMode('sandwich')]);
+      c.push(['View: Flame (rectangular)', () => setViewType('flame')]);
+      c.push(['View: Radial (sunburst)', () => setViewType('radial')]);
+      if (profile) for (const wt of profile.capabilities.weightTypes) c.push(['Weight: ' + wt, () => setWeight(wt)]);
+      c.push([(collapsed ? 'Disable' : 'Enable') + ' collapse', () => toggleCollapse()]);
+      c.push(['Export: speedscope JSON', () => doExport('speedscope')]);
+      c.push(['Export: folded', () => doExport('folded')]);
+      c.push(['Export: SVG snapshot', () => doExport('svg')]);
+      c.push(['Toggle color legend', () => toggleLegend()]);
+      c.push(['Help / keyboard shortcuts', () => toggleHelp()]);
+      for (const name of listThemes()) c.push(['Theme: ' + name + (name === getThemeName() ? ' ✓' : ''), () => applyTheme(name)]);
+      c.push(['Reset view', () => resetView()]);
+      return c.map(([label, run]) => ({ label, run }));
+    }
+    function palRender() {
+      const q = palInput.value.toLowerCase().trim();
+      palCurrent = q ? palCmds.filter((c) => c.label.toLowerCase().includes(q)) : palCmds;
+      palSel = Math.max(0, Math.min(palSel, palCurrent.length - 1));
+      palList.replaceChildren();
+      if (!palCurrent.length) { const e = document.createElement('div'); e.className = 'empty'; e.textContent = 'no matching command'; palList.appendChild(e); return; }
+      palCurrent.forEach((c, i) => { const d = document.createElement('div'); d.className = 'row' + (i === palSel ? ' sel' : ''); d.textContent = c.label; d.onmousedown = (ev) => { ev.preventDefault(); closePalette(); c.run(); }; palList.appendChild(d); });
+    }
+    function openPalette() { palCmds = paletteCommands(); palSel = 0; palInput.value = ''; palRender(); palette.classList.add('on'); palInput.focus(); }
+    function closePalette() { palette.classList.remove('on'); }
+    palInput.oninput = () => { palSel = 0; palRender(); };
+    palInput.onkeydown = (e) => {
+      if (e.key === 'ArrowDown') { palSel++; palRender(); e.preventDefault(); }
+      else if (e.key === 'ArrowUp') { palSel--; palRender(); e.preventDefault(); }
+      else if (e.key === 'Enter') { const c = palCurrent[palSel]; closePalette(); if (c) c.run(); e.preventDefault(); }
+      else if (e.key === 'Escape') { closePalette(); e.stopPropagation(); e.preventDefault(); }
+    };
+    palette.onmousedown = (e) => { if (e.target === palette) closePalette(); }; // backdrop click
+
+    // floating search pill (⌘F / /)
+    const pill = document.getElementById('searchpill');
+    const openSearch = () => { pill.classList.add('on'); searchEl.focus(); searchEl.select(); };
+    const closeSearch = () => { pill.classList.remove('on'); };
+    searchEl.onkeydown = (e) => { if (e.key === 'Escape') { e.stopPropagation(); searchEl.value = ''; if (view) view.setSearch(''); closeSearch(); searchEl.blur(); } };
+
+    // FG-037: on-demand color legend + help overlay + first-run coachmark
+    const help = document.getElementById('help'), legendEl = document.getElementById('legend');
+    function toggleLegend() { legendEl.classList.toggle('on'); }
+    function toggleHelp() { help.classList.toggle('on'); }
+    help.onmousedown = (e) => { if (e.target === help) help.classList.remove('on'); };
+    // theme picker dropdown
+    const themePicker = document.getElementById('theme-picker');
+    function openThemePicker() {
+      const r = stTheme.getBoundingClientRect();
+      themePicker.style.top = (r.bottom + 4) + 'px';
+      themePicker.style.right = (window.innerWidth - r.right) + 'px';
+      themePicker.style.left = 'auto';
+      const cur = getThemeName();
+      themePicker.innerHTML = listThemes().map((n) =>
+        `<div class="tp-row${n === cur ? ' cur' : ''}" data-n="${n.replace(/&/g,'&amp;').replace(/"/g,'&quot;')}">${n}${n === cur ? ' ✓' : ''}</div>`
+      ).join('');
+      themePicker.classList.add('on');
+      const active = themePicker.querySelector('.cur');
+      if (active) active.scrollIntoView({ block: 'nearest' });
+    }
+    function closeThemePicker() { themePicker.classList.remove('on'); }
+    themePicker.onmousedown = (e) => { const n = e.target.dataset.n; if (n) { applyTheme(n); closeThemePicker(); } };
+    document.addEventListener('mousedown', (e) => { if (!themePicker.contains(e.target) && e.target !== stTheme) closeThemePicker(); });
+    stTheme.onclick = () => themePicker.classList.contains('on') ? closeThemePicker() : openThemePicker();
+    // collapse token
+    document.getElementById('st-collapse').onclick = toggleCollapse;
+    document.getElementById('st-legend').onclick = toggleLegend;
+    document.getElementById('st-help').onclick = toggleHelp;
+    document.getElementById('hintk').onclick = openPalette;
+    function showCoach() {
+      try { if (localStorage.getItem('fv-coached')) return; } catch { return; }
+      const c = document.getElementById('coach');
+      c.textContent = 'right-click a frame for actions · ⌘K commands · ? help';
+      c.classList.add('on');
+      const done = () => { c.classList.remove('on'); try { localStorage.setItem('fv-coached', '1'); } catch { /* ignore */ } };
+      setTimeout(done, 8000);
+      window.addEventListener('keydown', done, { once: true });
+      window.addEventListener('mousedown', done, { once: true });
+    }
+
+    // drag-and-drop
+    const drop = document.getElementById('drop');
+    document.addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('on'); });
+    document.addEventListener('dragleave', (e) => { if (e.relatedTarget === null) drop.classList.remove('on'); });
+    document.addEventListener('drop', async (e) => { e.preventDefault(); drop.classList.remove('on'); const f = e.dataTransfer.files[0]; if (f) await openFile(f); });
+
+    // keymap: ⌘K palette · ⌘F or / search · 1/2/3 modes · c collapse · Esc dismiss/reset
+    window.addEventListener('keydown', (e) => {
+      const mod = e.metaKey || e.ctrlKey;
+      if (mod && (e.key === 'k' || e.key === 'K')) { e.preventDefault(); palette.classList.contains('on') ? closePalette() : openPalette(); return; }
+      if (mod && (e.key === 'f' || e.key === 'F')) { e.preventDefault(); openSearch(); return; }
+      const inInput = /^(INPUT|SELECT|TEXTAREA)$/.test(document.activeElement?.tagName || '');
+      if (e.key === '/' && !inInput) { e.preventDefault(); openSearch(); return; }
+      if (e.key === '?' && !inInput) { e.preventDefault(); toggleHelp(); return; }
+      if (e.key === 'Escape') { hideMenu(); closePalette(); closeThemePicker(); closeConnect(); help.classList.remove('on'); if (pill.classList.contains('on') && !searchEl.value) closeSearch(); if (view && !inInput) { view.resetZoom(); showDetail(false); } return; }
+      if (inInput || !view || !profile) return;
+      const caps = (VIEWS[viewType].capabilities || { modes: ['graph', 'chart', 'sandwich'] }).modes;
+      if (e.key === '1' && caps.includes('chart')) setMode('chart');
+      else if (e.key === '2') setMode('graph');
+      else if (e.key === '3' && caps.includes('sandwich')) setMode('sandwich');
+      else if (e.key === 'c') toggleCollapse();
+      else if (e.key === 'l') toggleLegend();
+      else if (e.key === 't' || e.key === 'T') { const ts = listThemes(); const i = ts.indexOf(getThemeName()); applyTheme(ts[(i + (e.key === 'T' ? -1 : 1) + ts.length) % ts.length]); }
+    });
+
+    // Apply the persisted theme (if any) before the first paint so colors are right immediately.
+    try { const t = localStorage.getItem('fv-theme'); if (t) setTheme(t); } catch { /* private mode */ }
+    applyThemeVars(getTokens());
+    stTheme.textContent = getThemeName();
+    syncCollapseToken();
+    loadSample('samples/real-vertx.speedscope.json');
+  </script>
+</body>
+</html>

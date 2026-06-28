@@ -1,0 +1,14 @@
+app 0 [000] 0.001000: 10 cpu-clock:
+	0 λ.handle (app.so)
+	0 café.résumé (app.so)
+	0 main (app.so)
+
+app 0 [000] 0.002000: 20 cpu-clock:
+	0 日本語.process (app.so)
+	0 café.résumé (app.so)
+	0 main (app.so)
+
+app 0 [000] 0.003000: 5 cpu-clock:
+	0 <anonymous> (app.so)
+	0 main (app.so)
+

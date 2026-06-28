@@ -1,0 +1,19 @@
+app 0 [000] 0.001000: 100 cpu-clock:
+	0 sql.exec (app.so)
+	0 data.load (app.so)
+	0 main (app.so)
+
+app 0 [000] 0.002000: 100 cpu-clock:
+	0 sql.exec (app.so)
+	0 data.load (app.so)
+	0 main (app.so)
+
+app 0 [000] 0.003000: 40 cpu-clock:
+	0 rows.scan (app.so)
+	0 data.load (app.so)
+	0 main (app.so)
+
+app 0 [000] 0.004000: 60 cpu-clock:
+	0 serialize.marshal (app.so)
+	0 main (app.so)
+

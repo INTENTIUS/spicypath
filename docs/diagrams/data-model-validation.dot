@@ -1,0 +1,67 @@
+// Validation matrix: does the canonical model let each MVP format feed each operation?
+// Y (green) = yes · ~ (yellow) = partial / one value only · N (red) = not from this format.
+// The pattern proves the design: aggregated formats (folded, pprof) degrade to graph-only
+// because they carry no per-sample time; timed formats unlock chart + metric coupling.
+//
+// Render:  dot -Tsvg data-model-validation.dot -o data-model-validation.svg
+digraph data_model_validation {
+  rankdir=TB;
+  labelloc="t";
+  label="Validation — MVP formats × operations (does the model carry what each needs?)";
+  fontname="Helvetica-Bold";
+  fontsize=14;
+  node [shape=plaintext, fontname="Helvetica"];
+
+  m [label=<
+    <table border="0" cellborder="1" cellspacing="0" cellpadding="5">
+      <tr>
+        <td bgcolor="#1f2937"><font color="white"><b>Format</b></font></td>
+        <td bgcolor="#1f2937"><font color="white"><b>Flame<br/>graph</b></font></td>
+        <td bgcolor="#1f2937"><font color="white"><b>Left-<br/>heavy</b></font></td>
+        <td bgcolor="#1f2937"><font color="white"><b>Flame<br/>chart</b></font></td>
+        <td bgcolor="#1f2937"><font color="white"><b>Sand-<br/>wich</b></font></td>
+        <td bgcolor="#1f2937"><font color="white"><b>Auto-<br/>collapse</b></font></td>
+        <td bgcolor="#1f2937"><font color="white"><b>Search</b></font></td>
+        <td bgcolor="#1f2937"><font color="white"><b>Diff</b></font></td>
+        <td bgcolor="#1f2937"><font color="white"><b>Metric<br/>coupling</b></font></td>
+        <td bgcolor="#1f2937"><font color="white"><b>Multi<br/>value-type</b></font></td>
+      </tr>
+      <tr>
+        <td align="left"><b>folded</b></td>
+        <td bgcolor="#86efac">Y</td><td bgcolor="#86efac">Y</td><td bgcolor="#fca5a5">N</td><td bgcolor="#86efac">Y</td><td bgcolor="#86efac">Y</td><td bgcolor="#86efac">Y</td><td bgcolor="#86efac">Y</td><td bgcolor="#fca5a5">N</td><td bgcolor="#fca5a5">N</td>
+      </tr>
+      <tr>
+        <td align="left"><b>pprof</b></td>
+        <td bgcolor="#86efac">Y</td><td bgcolor="#86efac">Y</td><td bgcolor="#fca5a5">N</td><td bgcolor="#86efac">Y</td><td bgcolor="#86efac">Y</td><td bgcolor="#86efac">Y</td><td bgcolor="#86efac">Y</td><td bgcolor="#fca5a5">N</td><td bgcolor="#86efac">Y</td>
+      </tr>
+      <tr>
+        <td align="left"><b>Chrome .cpuprofile</b></td>
+        <td bgcolor="#86efac">Y</td><td bgcolor="#86efac">Y</td><td bgcolor="#86efac">Y</td><td bgcolor="#86efac">Y</td><td bgcolor="#86efac">Y</td><td bgcolor="#86efac">Y</td><td bgcolor="#86efac">Y</td><td bgcolor="#86efac">Y</td><td bgcolor="#fca5a5">N</td>
+      </tr>
+      <tr>
+        <td align="left"><b>perf script</b></td>
+        <td bgcolor="#86efac">Y</td><td bgcolor="#86efac">Y</td><td bgcolor="#86efac">Y</td><td bgcolor="#86efac">Y</td><td bgcolor="#86efac">Y</td><td bgcolor="#86efac">Y</td><td bgcolor="#86efac">Y</td><td bgcolor="#86efac">Y</td><td bgcolor="#fde68a">~</td>
+      </tr>
+      <tr>
+        <td align="left"><b>OTLP Profiles</b></td>
+        <td bgcolor="#86efac">Y</td><td bgcolor="#86efac">Y</td><td bgcolor="#86efac">Y</td><td bgcolor="#86efac">Y</td><td bgcolor="#86efac">Y</td><td bgcolor="#86efac">Y</td><td bgcolor="#86efac">Y</td><td bgcolor="#86efac">Y</td><td bgcolor="#86efac">Y</td>
+      </tr>
+      <tr>
+        <td align="left" bgcolor="#dbeafe"><b>model feature needed</b></td>
+        <td bgcolor="#eef2f6"><font point-size="8">stacks+<br/>weights</font></td>
+        <td bgcolor="#eef2f6"><font point-size="8">grouped<br/>callnode</font></td>
+        <td bgcolor="#eef2f6"><font point-size="8">time[]</font></td>
+        <td bgcolor="#eef2f6"><font point-size="8">inverted+<br/>frame id</font></td>
+        <td bgcolor="#eef2f6"><font point-size="8">single-<br/>child</font></td>
+        <td bgcolor="#eef2f6"><font point-size="8">func<br/>names</font></td>
+        <td bgcolor="#eef2f6"><font point-size="8">signed<br/>weight</font></td>
+        <td bgcolor="#eef2f6"><font point-size="8">time[] +<br/>MetricSeries</font></td>
+        <td bgcolor="#eef2f6"><font point-size="8">weightsBy<br/>Type</font></td>
+      </tr>
+    </table>>];
+
+  legend [shape=note, fontsize=9, style=filled, fillcolor="#f1f5f9",
+    label="Y = yes  ·  ~ = partial (one event/value only)  ·  N = not from this format\lThe Flame-chart + Metric columns are N exactly for the aggregated formats (folded, pprof) —\lthey carry no per-sample time. That's the hasTiming flag doing its job, not a model gap.\lpprof uniquely carries multi-value; .cpuprofile uniquely (among the easy ones) carries time.\l"];
+
+  m -> legend [style=invis];
+}

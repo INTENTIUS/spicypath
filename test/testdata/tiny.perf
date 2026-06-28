@@ -1,0 +1,17 @@
+app 0 [000] 0.001000: 50 cpu-clock:
+	0 db.query (app.so)
+	0 router.handle (app.so)
+	0 http.serve (app.so)
+	0 main (app.so)
+
+app 0 [000] 0.002000: 30 cpu-clock:
+	0 json.encode (app.so)
+	0 router.handle (app.so)
+	0 http.serve (app.so)
+	0 main (app.so)
+
+app 0 [000] 0.003000: 20 cpu-clock:
+	0 gc.mark (app.so)
+	0 runtime.gc (app.so)
+	0 main (app.so)
+

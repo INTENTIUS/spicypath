@@ -1,0 +1,78 @@
+// Canonical data-model structure: interned structure-of-arrays + prefix-tree stacks.
+// Every non-string table stores integer indices into another table. The CallNodeTable is DERIVED at
+// load time (not from the source); MetricSeries is a time-aligned sibling.
+//
+// Render:  dot -Tsvg data-model-structure.dot -o data-model-structure.svg
+digraph data_model {
+  rankdir=LR;
+  labelloc="t";
+  label="Canonical data model — interned SoA tables + prefix-tree stacks";
+  fontname="Helvetica-Bold";
+  fontsize=15;
+  node [shape=plaintext, fontname="Helvetica", fontsize=10];
+  edge [fontname="Helvetica", fontsize=8, color="gray45"];
+
+  strings [label=<
+    <table border="0" cellborder="1" cellspacing="0" cellpadding="4" bgcolor="#eef6ff">
+      <tr><td bgcolor="#cfe3fb"><b>stringTable</b></td></tr>
+      <tr><td align="left">string[] — all names/paths<br/>interned; others store indices</td></tr>
+    </table>>];
+
+  funcs [label=<
+    <table border="0" cellborder="1" cellspacing="0" cellpadding="4" bgcolor="#eef6ff">
+      <tr><td bgcolor="#cfe3fb"><b>funcTable</b></td></tr>
+      <tr><td align="left">name : int → stringTable<br/>file : int → stringTable (or −1)<br/>line : int (def line, or −1)</td></tr>
+      <tr><td align="left"><i>key: name#file</i></td></tr>
+    </table>>];
+
+  frames [label=<
+    <table border="0" cellborder="1" cellspacing="0" cellpadding="4" bgcolor="#eef6ff">
+      <tr><td bgcolor="#cfe3fb"><b>frameTable</b></td></tr>
+      <tr><td align="left">func : int → funcTable<br/>line : int (call-site, or −1)<br/>inlineDepth : int (0 = real)</td></tr>
+      <tr><td align="left"><i>key: func#line#inlineDepth</i></td></tr>
+    </table>>];
+
+  stacks [label=<
+    <table border="0" cellborder="1" cellspacing="0" cellpadding="4" bgcolor="#eef6ff">
+      <tr><td bgcolor="#cfe3fb"><b>stackTable</b> (prefix tree)</td></tr>
+      <tr><td align="left">frame : int → frameTable<br/>prefix : int → stackTable (or −1)</td></tr>
+      <tr><td align="left"><i>1 int / sample = scale win</i></td></tr>
+    </table>>];
+
+  samples [label=<
+    <table border="0" cellborder="1" cellspacing="0" cellpadding="4" bgcolor="#e7f7ee">
+      <tr><td bgcolor="#bfe9d2"><b>samples</b> (per thread)</td></tr>
+      <tr><td align="left">stack : int → stackTable<br/>weightsByType : {ValueType → number[]}<br/>   (signed; multi-value)<br/>time : number[] (iff hasTiming)</td></tr>
+    </table>>];
+
+  profile [label=<
+    <table border="0" cellborder="1" cellspacing="0" cellpadding="4" bgcolor="#fff6ee">
+      <tr><td bgcolor="#fbe1c8"><b>Profile</b></td></tr>
+      <tr><td align="left">threads : Thread[]<br/>capabilities:<br/>  hasTiming : bool<br/>  weightTypes : ValueType[]<br/>  isDiff : bool</td></tr>
+    </table>>];
+
+  callnode [label=<
+    <table border="0" cellborder="1" cellspacing="0" cellpadding="4" bgcolor="#f3e8ff">
+      <tr><td bgcolor="#e2cffb"><b>CallNodeTable</b> (DERIVED)</td></tr>
+      <tr><td align="left">prefix, func, depth,<br/>nextSibling, subtreeRangeEnd<br/>(typed Int32Array — render structure)</td></tr>
+    </table>>];
+
+  metrics [label=<
+    <table border="0" cellborder="1" cellspacing="0" cellpadding="4" bgcolor="#fef9c3">
+      <tr><td bgcolor="#fdf0a8"><b>MetricSeries</b> (sibling)</td></tr>
+      <tr><td align="left">name, unit<br/>time : number[]<br/>value : number[]</td></tr>
+    </table>>];
+
+  funcs   -> strings  [label="name, file"];
+  frames  -> funcs    [label="func"];
+  stacks  -> frames   [label="frame"];
+  stacks  -> stacks   [label="prefix → parent"];
+  samples -> stacks   [label="stack"];
+  profile -> samples  [style=dotted, label="per thread"];
+  samples -> callnode [style=dashed, color="#7c3aed", fontcolor="#7c3aed", label="derived: merge"];
+  metrics -> samples  [style=dashed, color="#b59f3b", fontcolor="#b59f3b", label="aligned by time"];
+
+  note [shape=note, fontsize=8.5, style=filled, fillcolor="#f1f5f9",
+    label="Signed weights → diff for free.  time[] present → flame chart + metric coupling.\lhasTiming=false (folded, pprof) → graph-only, gracefully.\lCallNodeTable is rebuilt at render time; pruning/virtualization operate on it.\l"];
+  callnode -> note [style=invis];
+}
