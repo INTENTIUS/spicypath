@@ -4,6 +4,7 @@ import { parseFoldedText } from './parse-folded.js';
 import { parseSpeedscopeText } from './parse-speedscope.js';
 import { parseCpuProfileText } from './parse-cpuprofile.js';
 import { parsePprofBytes } from './parse-pprof.js';
+import { parseOtlpBytes } from './parse-otlp.js';
 import { parsePerfScriptText } from './parse-perf.js';
 
 async function gunzipIfNeeded(bytes) {
@@ -18,7 +19,9 @@ export async function ingestBytes(name, bytes) {
   const lower = (name || '').toLowerCase();
   const data = await gunzipIfNeeded(bytes);
 
-  // extension-driven (fast path)
+  // extension-driven (fast path). OTLP and pprof are both protobuf, so they can't be told
+  // apart by a content sniff — extension is authoritative for OTLP (checked before pprof).
+  if (lower.includes('.otlp')) return parseOtlpBytes(data);
   if (/\.(pprof|pb|prof)$/.test(lower)) return parsePprofBytes(data);
   const text = new TextDecoder().decode(data);
   if (lower.endsWith('.cpuprofile')) return parseCpuProfileText(text);

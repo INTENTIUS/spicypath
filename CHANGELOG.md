@@ -87,6 +87,12 @@ semantic color · labels-where-fit · path highlight · auto-collapse) landed he
 The differentiating layer — making spicypath not file-only. Remaining M4 work is tracked in
 [GitHub issues](https://github.com/INTENTIUS/spicypath/issues?q=is%3Aopen+milestone%3AM4).
 
+- FG-027 OTLP Profiles parser + emitter — `src/parse-otlp.js` decodes the OpenTelemetry
+  profiling signal (dictionary model, `profiles/v1development`, schema pinned to
+  opentelemetry-proto v1.7.0) with a hand-rolled protobuf reader and no deps; reuses the pprof
+  value-type mapping for multi-value. `test/otlp-test.ts` proves the lossless `pprof ↔ OTLP`
+  edge: the same payload encoded both ways parses to the identical canonical model, and a real
+  `go.pprof` survives a pprof→OTLP→model round-trip. Golden 42/42, ingest 44/44.
 - FG-026 perf-script parser + emitter (timed; blank-line sample blocks). Wired into golden +
   ingest, synthesized with no Linux dependency.
 - FG-028 (Slice A) Live `/debug/pprof` fetch — `src/fetch-pprof.js`: a time-scoped HTTP GET

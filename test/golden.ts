@@ -9,12 +9,14 @@ import { emitSpeedscope } from './emit/emit-speedscope.js';
 import { emitSpeedscopeEvented } from './emit/emit-speedscope-evented.js';
 import { emitCpuprofile } from './emit/emit-cpuprofile.js';
 import { emitPprof } from './emit/emit-pprof.js';
+import { emitOtlp } from './emit/emit-otlp.js';
 import { emitPerfScript } from './emit/emit-perf.js';
 import { parseFolded } from './parse-folded.ts';
 import { parsePerf } from './parse-perf.ts';
 import { parseSpeedscope } from './parse-speedscope.ts';
 import { parseCpuProfile } from './parse-cpuprofile.ts';
 import { parsePprof } from './parse-pprof.ts';
+import { parseOtlp } from './parse-otlp.ts';
 import type { Profile } from '../src/model.ts';
 
 mkdirSync('test/testdata', { recursive: true });
@@ -54,6 +56,7 @@ const FORMATS = [
   { ext: 'evt.speedscope.json', emit: emitSpeedscopeEvented, parse: parseSpeedscope, binary: false },
   { ext: 'cpuprofile', emit: emitCpuprofile, parse: parseCpuProfile, binary: false },
   { ext: 'pprof', emit: emitPprof, parse: parsePprof, binary: true },
+  { ext: 'otlp', emit: emitOtlp, parse: parseOtlp, binary: true },
   { ext: 'perf', emit: emitPerfScript, parse: parsePerf, binary: false },
 ];
 
@@ -72,7 +75,7 @@ for (const scene of PRESETS) {
       // capability checks
       const caps: string[] = [];
       if (fmt.ext === 'cpuprofile' && !prof.capabilities.hasTiming) caps.push('expected hasTiming');
-      if (fmt.ext === 'pprof' && scene.weightTypes.length > 1 && prof.capabilities.weightTypes.length < 2) caps.push('expected multi-value');
+      if ((fmt.ext === 'pprof' || fmt.ext === 'otlp') && scene.weightTypes.length > 1 && prof.capabilities.weightTypes.length < 2) caps.push('expected multi-value');
       if (d || caps.length) { fail++; line += `FAIL ${d || ''} ${caps.join('; ')}`; }
       else { pass++; line += `ok (${prof.threads[0].samples.stack.length} samp, hasTiming=${prof.capabilities.hasTiming}, wt=[${prof.capabilities.weightTypes.join(',')}])`; }
     } catch (e) { fail++; line += `ERROR ${(e as Error).message}`; }

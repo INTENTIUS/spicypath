@@ -7,8 +7,8 @@ profile diffing.
 
 - **No build, no dependencies.** Plain ES modules and a single Canvas 2D renderer; open it
   and it runs. Nothing is uploaded — parsing happens locally.
-- **Reads common formats:** folded/collapsed, pprof, V8 `.cpuprofile`, speedscope
-  (sampled + evented), and `perf script`. See [`docs/formats.md`](./docs/formats.md).
+- **Reads common formats:** folded/collapsed, pprof, OTLP Profiles, V8 `.cpuprofile`,
+  speedscope (sampled + evented), and `perf script`. See [`docs/formats.md`](./docs/formats.md).
 - **Views:** Timeline (flame chart) · Aggregated (flame graph) · Sandwich · Radial,
   plus a diff/comparison mode.
 
@@ -60,6 +60,7 @@ node test/golden.ts       # parse → model → re-emit round-trips
 node test/ingest-test.ts  # format detection + ingestion
 node test/export-test.ts  # export → re-import stability
 node test/diff-test.ts    # diff math
+node test/otlp-test.ts    # pprof <-> OTLP lossless-edge proof
 node test/sandwich-test.ts # sandwich focal selection (incl. hub-less profiles)
 node test/bench.ts         # scale benchmark
 node test/browser.ts      # real-Chrome interaction checks (CDP)
