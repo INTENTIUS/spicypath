@@ -734,6 +734,107 @@ try {
   const afterLeave = await evalIn(`(()=>{const f=window.__fv;return {hover:f.hover,hoverTime:f.hoverTime,hoverV:f.hoverV};})()`);
   check('FG-025 pass2: mouseleave clears hoverTime + hover + hoverV', afterLeave.hover == null && afterLeave.hoverTime == null && afterLeave.hoverV == null, JSON.stringify(afterLeave));
 
+  // --- FG-025 pass 3: metric-brush → windowed re-aggregation + highlight ---
+  // Re-enter chart mode with metrics injected (state was reset above; re-inject here).
+  await evalIn(`window.__app.loadSample('samples/node.cpuprofile')`);
+  await poll(`window.__fv && /node\\.cpuprofile/.test(document.getElementById('info').innerText||'') ? 1 : 0`);
+  await evalIn(`document.getElementById('m-chart').click()`);
+  await poll(`window.__fv && window.__fv.mode==='chart' ? 1 : 0`);
+  await evalIn(`(()=>{
+    const chart = window.__fv.chart;
+    const start = chart.start, end = chart.end, n = 32, span = end - start || 1;
+    const time = Array.from({length:n},(_,i)=>start+(i/(n-1))*span);
+    const cpu  = Array.from({length:n},(_,i)=>40+35*Math.sin((i/(n-1))*2*Math.PI));
+    window.__app.setMetrics([{name:'CPU',unit:'%',time:[...time],value:cpu}]);
+  })()`);
+  await sleep(80);
+
+  // (1) Brush drag across a lane: simulate mousedown/mousemove/mouseup inside the lane band.
+  //     The lane occupies y=[MINIMAP_H, MINIMAP_H+METRIC_LANE_H) = [52, 104) in CSS px.
+  const brushState = await evalIn(`(()=>{
+    const f = window.__fv;
+    const cv = document.getElementById('cv');
+    const r = cv.getBoundingClientRect();
+    if (!f.metricsH) return {skip:true, metricsH:f.metricsH};
+    const laneY = r.top + 52 + 10; // inside lane 0
+    const xA = r.left + f.cssW * 0.2;
+    const xB = r.left + f.cssW * 0.7;
+    // dispatch synthetic events; call _onDown/_onBrushMove/_onBrushUp via the internal handlers
+    // to avoid Chrome CDP timing issues with window-level listeners
+    f._onDown({clientX: xA, clientY: laneY, preventDefault: ()=>{} });
+    // simulate a move (directly update _brushT like _onBrushMove would)
+    const [ws, we] = f._winBounds();
+    f._brushT = ws + (0.7) * (we - ws);
+    f._onBrushUp();
+    return {
+      brushSet: !!f.brush,
+      brush: f.brush,
+      brushFuncsSize: f.brushFuncs ? f.brushFuncs.size : 0,
+    };
+  })()`);
+  check('FG-025 pass3: brush drag sets this.brush', brushState.brushSet === true, JSON.stringify(brushState));
+  check('FG-025 pass3: brushFuncs is a non-empty Set after drag', brushState.brushFuncsSize > 0, `brushFuncs.size=${brushState.brushFuncsSize}`);
+
+  // (2) _lit() returns true for a brushed func, false for a non-brushed one (chart mode).
+  const litState = await evalIn(`(()=>{
+    const f = window.__fv;
+    if (!f.brush || !f.brushFuncs || f.brushFuncs.size === 0) return {skip:true};
+    // find a func in the set and one that is not
+    const brushedFunc = [...f.brushFuncs][0];
+    // find a func NOT in the set (scan all funcs in the ct)
+    const allFuncs = new Set(f.ct.func);
+    let unbrushedFunc = -1;
+    for (const fn of allFuncs) { if (!f.brushFuncs.has(fn)) { unbrushedFunc = fn; break; } }
+    const litBrushed = f._lit({func: brushedFunc, t0: 0, t1: 1});
+    const litUnbrushed = unbrushedFunc >= 0 ? f._lit({func: unbrushedFunc, t0: 0, t1: 1}) : null;
+    return {litBrushed, litUnbrushed, brushedFunc, unbrushedFunc};
+  })()`);
+  check('FG-025 pass3: _lit() returns true for a brushed func', litState.litBrushed === true, JSON.stringify(litState));
+  check('FG-025 pass3: _lit() returns false for a non-brushed func', litState.litUnbrushed === false || litState.unbrushedFunc < 0, JSON.stringify(litState));
+
+  // (3) draw() with a brush active does not throw.
+  const brushDraw = await evalIn(`(()=>{try{window.__fv.draw();return {ok:true};}catch(e){return {ok:false,err:e.message};}})()`);
+  check('FG-025 pass3: draw() with active brush does not throw', brushDraw.ok, JSON.stringify(brushDraw));
+
+  // (4) Esc clears the brush.
+  await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 }, sessionId);
+  await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 }, sessionId);
+  await sleep(40);
+  const afterEsc = await evalIn(`(()=>{const f=window.__fv;return {brush:f.brush,brushFuncs:f.brushFuncs};})()`);
+  check('FG-025 pass3: Esc clears brush', afterEsc.brush == null && afterEsc.brushFuncs == null, JSON.stringify(afterEsc));
+
+  // (5) Tiny drag (< 5px) clears the brush rather than setting it.
+  const tinyDragState = await evalIn(`(()=>{
+    const f = window.__fv;
+    const cv = document.getElementById('cv');
+    const r = cv.getBoundingClientRect();
+    if (!f.metricsH) return {skip:true};
+    const laneY = r.top + 52 + 10;
+    const xA = r.left + f.cssW * 0.5;
+    f._applyBrush(f.chart.start, f.chart.end * 0.8); // set a brush first
+    const hadBrush = !!f.brush;
+    // tiny drag: just 2px of movement
+    f._onDown({clientX: xA, clientY: laneY, preventDefault: ()=>{}});
+    const [ws, we] = f._winBounds();
+    const tinyT = f._brushDrag.startT + (we - ws) * 0.001; // tiny fraction
+    f._brushT = tinyT;
+    f._onBrushUp();
+    return {hadBrush, brush: f.brush, brushFuncs: f.brushFuncs};
+  })()`);
+  check('FG-025 pass3: tiny drag clears brush', tinyDragState.hadBrush && tinyDragState.brush == null, JSON.stringify(tinyDragState));
+
+  // (6) #brushinfo overlay becomes visible when a brush is applied.
+  await evalIn(`(()=>{
+    const f = window.__fv;
+    const [ws, we] = f._winBounds();
+    const mid = ws + (we - ws) * 0.5;
+    f._applyBrush(ws, mid);
+  })()`);
+  await sleep(30);
+  const brushInfo = await evalIn(`(()=>{const el=document.getElementById('brushinfo');return {exists:!!el,display:el?el.style.display:'',text:(el?el.textContent||'':'').trim()};})()`);
+  check('FG-025 pass3: #brushinfo element exists in DOM', brushInfo.exists, JSON.stringify(brushInfo));
+  check('FG-025 pass3: #brushinfo is visible when brush is set', brushInfo.display !== 'none' && brushInfo.text.length > 0, JSON.stringify(brushInfo));
+
   // Clean up: remove metrics and reset.
   await evalIn(`window.__app.setMetrics([]); window.__app.resetView();`);
 

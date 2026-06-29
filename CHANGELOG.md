@@ -87,6 +87,14 @@ semantic color · labels-where-fit · path highlight · auto-collapse) landed he
 The differentiating layer — making spicypath not file-only. Remaining M4 work is tracked in
 [GitHub issues](https://github.com/INTENTIUS/spicypath/issues?q=is%3Aopen+milestone%3AM4).
 
+- FG-025 Metrics coupling — metric track lanes (CPU/RAM/… time-series) locked to the Timeline
+  time axis, with bidirectional hover and brush re-aggregation. Hovering a lane lights the call
+  stack active at that instant; hovering a frame bands its time span across the lanes. Brushing a
+  time range on a lane (`src/metrics-window.js` `aggregateWindow`, half-open `[t0,t1)`) surfaces
+  the functions that dominated that window and highlights them in the flame. `Profile.metrics`
+  carries the series; `window.__app.setMetrics()` injects synthesized ones for tests. Chart-mode
+  only; additive (golden/bench untouched). Shipped in three passes (tracks → hover → brush).
+  _Deferred: a graph-mode weight selector and per-frame correlation-coefficient coloring._
 - FG-030 Source-line view — `src/sourceline.js` aggregates per-line self/total weight for a
   selected function (recursion-safe: a line of `f` on the stack at multiple depths counts once
   per sample; callee lines never leak into `f`). Drop source files (or "Load source files…" in

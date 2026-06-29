@@ -12,6 +12,7 @@ import { buildFlameChart, chartLayout } from './flamechart.js';
 import { buildSandwich } from './sandwich.js';
 import { funcName, funcFile, packageOf, colorForFunc, colorForPackage, colorForDelta } from './colors.js';
 import { getTokens, luminance } from './theme.js';
+import { aggregateWindow } from './metrics-window.js'; // FG-025 pass 3
 
 const ROW = 22;
 const BAND = 22;
@@ -53,6 +54,8 @@ export class BaseView {
     this.hover = null;
     this.hoverV = null;       // hovered domain value (time/fraction) → synced minimap↔content crosshair
     this.hoverTime = null;    // time value when hovering a metric lane (FG-025 pass 2); null otherwise
+    this.brush = null;        // FG-025 pass 3: active time-range brush [tb0, tb1] or null
+    this.brushFuncs = null;   // FG-025 pass 3: Set of func indices lit by the brush, or null
     this.contentTop = 0;      // y-offset of the main content (MINIMAP_H + AXIS_H when chrome shows)
     this.miniDrag = null;
     this.diffMax = 0;
@@ -95,13 +98,13 @@ export class BaseView {
 
   // Sandwich always opens on the default hub (predictable re-entry); an explicit "sandwich
   // this fn" (FG-035) will set focalFunc directly instead of going through here.
-  setMode(m) { this.mode = m; this.focus = null; this.win = null; this.scrollY = 0; this.hover = null; this.hoverV = null; this.hoverTime = null; if (m === 'sandwich') { this.focalFunc = this._defaultFocal(); this._buildSandwich(); } this.relayout(); this._updateLegend(); }
+  setMode(m) { this.mode = m; this.focus = null; this.win = null; this.scrollY = 0; this.hover = null; this.hoverV = null; this.hoverTime = null; this._clearBrush(); if (m === 'sandwich') { this.focalFunc = this._defaultFocal(); this._buildSandwich(); } this.relayout(); this._updateLegend(); }
   setCollapse(b) { this.collapse = b; this.relayout(); }
   resetZoom() { this.focus = null; this.win = null; this.scrollY = 0; this.hoverTime = null; if (this.mode === 'sandwich') { this.focalFunc = this._defaultFocal(); this._buildSandwich(); } this.relayout(); }
   // Enter diff. Clears search too: matchedFuncs are func indices in the ORIGINAL profile, but
   // diff swaps this.p/this.ct to the synthetic diff profile (different indexing) — a stale
   // search would highlight the wrong frames.
-  showDiff(d) { this.mode = 'diff'; this.ct = d.ct; this.p = d.profile; this.diffMax = d.maxAbsDelta; this.focus = null; this.win = null; this.scrollY = 0; this.hover = null; this.hoverTime = null; this.selectedFunc = null; this.query = ''; this.matchedFuncs = null; this.relayout(); this._updateLegend(); }
+  showDiff(d) { this.mode = 'diff'; this.ct = d.ct; this.p = d.profile; this.diffMax = d.maxAbsDelta; this.focus = null; this.win = null; this.scrollY = 0; this.hover = null; this.hoverTime = null; this.selectedFunc = null; this.query = ''; this.matchedFuncs = null; this._clearBrush(); this.relayout(); this._updateLegend(); }
   _defaultFocal() {
     // A good sandwich subject is a *hub* — it has BOTH callers and callees. Picking the
     // heaviest-self frame often lands on a deep leaf, whose sandwich degenerates into a plain
@@ -159,11 +162,49 @@ export class BaseView {
   // is a box "lit" (full opacity)? search match, hover call-path, lane-hover time span, or no filter active
   _lit(b) {
     if (this.matchedFuncs) return this.matchedFuncs.has(b.func);
+    // FG-025 pass 3: brush filter — chart-only, gated when brushFuncs is set and no search is active
+    if (this.brushFuncs && this.mode === 'chart') return this.brushFuncs.has(b.func);
     // lane hover (FG-025 pass 2): box is lit iff its time span contains the hovered time
     if (this.hoverTime != null) return b.t0 <= this.hoverTime && this.hoverTime < b.t1;
     if (!this.hover) return true;
     if (this.mode === 'graph' || this.mode === 'diff') return this._ancestors(this.hover.node).has(b.node) || this._isDesc(b.node, this.hover.node);
     return b.func === this.hover.func;
+  }
+
+  // FG-025 pass 3: clear the brush and its derived state; update the overlay.
+  _clearBrush() {
+    this.brush = null;
+    this.brushFuncs = null;
+    const el = typeof document !== 'undefined' ? document.getElementById('brushinfo') : null;
+    if (el) { el.style.display = 'none'; el.textContent = ''; }
+  }
+
+  // FG-025 pass 3: set brush to [tb0, tb1], compute windowed aggregation, update overlay.
+  // TODO FG-025: deferred to a later pass — a separate graph-mode weight selector, and full
+  // per-frame correlation-coefficient coloring. The top-K brush highlight below is the
+  // correlation signal for this pass.
+  _applyBrush(tb0, tb1) {
+    this.brush = [tb0, tb1];
+    // aggregate the window and build the brushFuncs set
+    const result = aggregateWindow(this.p, 0, this.weightType, tb0, tb1);
+    const TOP_K = 10;
+    const top = result.funcs.slice(0, TOP_K);
+    this.brushFuncs = new Set(top.map((f) => f.func));
+    // populate the #brushinfo overlay
+    const el = typeof document !== 'undefined' ? document.getElementById('brushinfo') : null;
+    if (el) {
+      if (top.length === 0) {
+        el.style.display = 'none';
+      } else {
+        const lines = top.map((f) => {
+          const pct = (f.totalFrac * 100).toFixed(1);
+          const nm = f.name.length > 32 ? f.name.slice(0, 29) + '…' : f.name;
+          return `${pct}% ${nm}`;
+        });
+        el.textContent = lines.join('  ·  ');
+        el.style.display = 'block';
+      }
+    }
   }
 
   _zoomLearned() { try { return !!localStorage.getItem('fv-zoomed'); } catch { return true; } }
@@ -336,7 +377,11 @@ export class FlameView extends BaseView {
       dbl: (e) => this._onDblClick(e),
       wheel: (e) => this._onWheel(e),
       resize: () => this.relayout(),
+      keydown: (e) => { if (e.key === 'Escape' && this.brush) { this._clearBrush(); this._schedule(); } },
     };
+    // FG-025 pass 3: brush drag state — separate from _mmMove/_mmUp (which serve minimap)
+    this._brushMove = null;
+    this._brushUp = null;
     canvas.addEventListener('mousemove', this._on.move);
     canvas.addEventListener('mouseleave', this._on.leave);
     canvas.addEventListener('mousedown', this._on.down);
@@ -344,6 +389,7 @@ export class FlameView extends BaseView {
     canvas.addEventListener('dblclick', this._on.dbl);
     canvas.addEventListener('wheel', this._on.wheel, { passive: false });
     window.addEventListener('resize', this._on.resize);
+    window.addEventListener('keydown', this._on.keydown); // FG-025 pass 3: Esc clears brush
     this.relayout();
     this._updateLegend();
   }
@@ -354,7 +400,9 @@ export class FlameView extends BaseView {
     c.removeEventListener('mousedown', h.down); c.removeEventListener('click', h.click);
     c.removeEventListener('dblclick', h.dbl); c.removeEventListener('wheel', h.wheel);
     window.removeEventListener('resize', h.resize);
+    window.removeEventListener('keydown', h.keydown); // FG-025 pass 3
     if (this._mmMove) { window.removeEventListener('mousemove', this._mmMove); window.removeEventListener('mouseup', this._mmUp); }
+    if (this._brushMove) { window.removeEventListener('mousemove', this._brushMove); window.removeEventListener('mouseup', this._brushUp); } // FG-025 pass 3
   }
 
   _hasMinimap() { return !!((this.mode === 'chart' && this.chart) || this.mode === 'graph' || this.mode === 'diff'); }
@@ -450,6 +498,18 @@ export class FlameView extends BaseView {
       window.addEventListener('mousemove', this._mmMove); window.addEventListener('mouseup', this._mmUp);
       return;
     }
+    // FG-025 pass 3: brush drag on metric lanes (chart mode only)
+    if (this.mode === 'chart' && this.metricsH > 0 && py >= MINIMAP_H && py < MINIMAP_H + this.metricsH) {
+      e.preventDefault();
+      const [ws, we] = this._winBounds();
+      const tAt = ws + (px / this.cssW) * (we - ws);
+      this._brushDrag = { startPx: px, startT: tAt };
+      this._brushT = tAt; // current drag end
+      this._brushMove = (ev) => this._onBrushMove(ev);
+      this._brushUp = () => this._onBrushUp();
+      window.addEventListener('mousemove', this._brushMove); window.addEventListener('mouseup', this._brushUp);
+      return;
+    }
     if (!this._hasMinimap() || py >= MINIMAP_H) return;
     e.preventDefault();
     const [ws, we] = this._winBounds();
@@ -487,6 +547,33 @@ export class FlameView extends BaseView {
     this._schedule();
   }
   _onBarUp() { this.barDrag = null; window.removeEventListener('mousemove', this._mmMove); window.removeEventListener('mouseup', this._mmUp); }
+  // FG-025 pass 3: brush drag on metric lanes
+  _onBrushMove(ev) {
+    const r = this.canvas.getBoundingClientRect();
+    const px = ev.clientX - r.left;
+    const [ws, we] = this._winBounds();
+    this._brushT = ws + (px / this.cssW) * (we - ws);
+    this._schedule();
+  }
+  _onBrushUp() {
+    window.removeEventListener('mousemove', this._brushMove); window.removeEventListener('mouseup', this._brushUp);
+    this._brushMove = null; this._brushUp = null;
+    if (!this._brushDrag) return;
+    const { startPx, startT } = this._brushDrag;
+    this._brushDrag = null;
+    const r = this.canvas.getBoundingClientRect();
+    const endT = this._brushT != null ? this._brushT : startT;
+    const tb0 = Math.min(startT, endT), tb1 = Math.max(startT, endT);
+    const pxSpan = Math.abs((tb1 - tb0) / ((this._winBounds()[1] - this._winBounds()[0]) || 1) * this.cssW);
+    if (pxSpan < 5) {
+      // tiny drag — clear the brush
+      this._clearBrush();
+    } else {
+      this._applyBrush(tb0, tb1);
+    }
+    this._brushT = null;
+    this._schedule();
+  }
   _onWheel(e) {
     // ⌘/Ctrl + wheel (or pinch, reported as ctrl+wheel) → zoom about the cursor.
     if ((e.ctrlKey || e.metaKey) && this._hasMinimap()) {
@@ -536,7 +623,7 @@ export class FlameView extends BaseView {
       this.canvas.style.cursor = insideCrop ? 'grab' : 'col-resize';
       this._schedule(); return;
     }
-    // FG-025 pass 2: metric lane hover — the band between minimap and axis (chart mode only)
+    // FG-025 pass 2 + 3: metric lane hover — the band between minimap and axis (chart mode only)
     if (this.mode === 'chart' && this.metricsH > 0 && py >= MINIMAP_H && py < MINIMAP_H + this.metricsH) {
       this.hover = null; this._tooltip(null);
       const [ws, we] = this._winBounds();
@@ -554,6 +641,11 @@ export class FlameView extends BaseView {
   _onClick(e) { // single click = select → detail panel
     const r = this.canvas.getBoundingClientRect(); const px = e.clientX - r.left, py = e.clientY - r.top;
     if (this._hasMinimap() && py < MINIMAP_H) return;
+    // FG-025 pass 3: click in the lane area starts/clears a brush (handled by _onBrushUp),
+    // so skip the selection path when in the lane band
+    if (this.mode === 'chart' && this.metricsH > 0 && py >= MINIMAP_H && py < MINIMAP_H + this.metricsH) return;
+    // FG-025 pass 3: plain click outside the lanes clears any active brush
+    if (this.brush) { this._clearBrush(); this._schedule(); }
     const b = this._hit(px, py);
     this.selectedFunc = b ? b.func : null;
     this.selectedNode = (b && b.node != null) ? b.node : null;
@@ -750,6 +842,29 @@ export class FlameView extends BaseView {
       if (bandX0 != null) {
         ctx.fillStyle = this._rgba(this.T.accent, 0.28);
         ctx.fillRect(bandX0, laneY, bandX1 - bandX0, METRIC_LANE_H);
+      }
+
+      // FG-025 pass 3: brush rectangle — drawn over the lane for both in-progress and committed brushes
+      {
+        let bx0 = null, bx1 = null;
+        if (this.brush) {
+          // committed brush
+          bx0 = (Math.max(this.brush[0], ws) - ws) / domSpan * w;
+          bx1 = (Math.min(this.brush[1], we) - ws) / domSpan * w;
+        } else if (this._brushDrag && this._brushT != null) {
+          // in-progress brush drag
+          const tb0 = Math.min(this._brushDrag.startT, this._brushT);
+          const tb1 = Math.max(this._brushDrag.startT, this._brushT);
+          bx0 = (Math.max(tb0, ws) - ws) / domSpan * w;
+          bx1 = (Math.min(tb1, we) - ws) / domSpan * w;
+        }
+        if (bx0 != null && bx1 > bx0) {
+          ctx.fillStyle = this._rgba(this.T.accent, 0.18);
+          ctx.fillRect(bx0, laneY, bx1 - bx0, METRIC_LANE_H);
+          ctx.strokeStyle = this._rgba(this.T.accent, 0.7);
+          ctx.lineWidth = 1;
+          ctx.strokeRect(bx0 + 0.5, laneY + 0.5, bx1 - bx0 - 1, METRIC_LANE_H - 1);
+        }
       }
 
       ctx.restore();

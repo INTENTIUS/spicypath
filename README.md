@@ -37,6 +37,9 @@ to open your own; `.gz` is decompressed automatically.
 - **Zoom** by double-clicking a frame or span; **Esc** resets.
 - **Diff** two profiles with *compare* — red marks regressions, blue improvements.
 - **Export** the current profile as `.speedscope.json`, `.folded`, or an `.svg` snapshot.
+- **Metrics** — in Timeline, attach metric tracks (CPU/RAM/…) locked to the time axis: hover a
+  track to light the stack at that instant, hover a frame to band its span on the tracks, and
+  brush a range to see which functions dominated that window.
 - **Source lines** — drop your source files (or *Load source files…* in ⌘K) and a selected
   function's source shows with per-line weight and heat shading. Matched locally by file name;
   nothing is uploaded.
@@ -68,6 +71,7 @@ node test/ingest-test.ts  # format detection + ingestion
 node test/export-test.ts  # export → re-import stability
 node test/diff-test.ts    # diff math
 node test/otlp-test.ts    # pprof <-> OTLP lossless-edge proof
+node test/metrics-window-test.ts # metric-brush windowed re-aggregation
 node test/sandwich-test.ts # sandwich focal selection (incl. hub-less profiles)
 node test/sourceline-test.ts # per-line weight aggregation (recursion-safe)
 node test/bench.ts         # scale benchmark
