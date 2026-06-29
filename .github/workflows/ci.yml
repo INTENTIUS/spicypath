@@ -1,0 +1,72 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# spicypath is zero-build (no npm install): the tests are plain `node test/*.ts` entry points
+# (Node 23.6+ strips TypeScript). Deploy is handled by Cloudflare Workers Builds, not here —
+# this workflow only runs checks. (Action versions are tags; SHA-pin for parity with blacklight.)
+jobs:
+  # Node logic suite: model, parsers, ingest, export, diff, and the analysis aggregations.
+  # A JDK is installed so the JFR test generates a real recording instead of skipping.
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '24'
+      - name: node test suite
+        run: |
+          set -e
+          for t in run golden ingest-test export-test diff-test otlp-test \
+                   sandwich-test sourceline-test metrics-window-test adapters-test \
+                   escape-test color-test theme-test parse-jfr-test; do
+            echo "── node test/$t.ts"
+            node "test/$t.ts"
+          done
+
+  # Real-Chrome interaction checks (CDP). The system Chrome is installed and its path passed
+  # to the harness via CHROME_PATH.
+  browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: browser-actions/setup-chrome@v1
+        id: chrome
+        with:
+          chrome-version: stable
+      - name: browser harness
+        run: node test/browser.ts
+        env:
+          CHROME_PATH: ${{ steps.chrome.outputs.chrome-path }}
+
+  # Validate the deploy config the way Workers Builds will use it (no upload, no auth).
+  wrangler-config:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: wrangler deploy --dry-run
+        run: npx --yes wrangler@4 deploy --dry-run

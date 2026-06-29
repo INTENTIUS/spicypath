@@ -21,9 +21,14 @@ import { startMockPprofServer } from './mock-pprof-server.ts';
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const ROOT = process.cwd();
 const DATA = resolve(ROOT, 'test/data/node.cpuprofile'); // timed → enables Timeline (chart)
-const CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+// CHROME_PATH overrides (CI sets it from setup-chrome); else probe the usual Mac/Linux spots.
+const CHROME = process.env.CHROME_PATH
+  || ['/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+      '/usr/bin/google-chrome', '/usr/bin/google-chrome-stable',
+      '/usr/bin/chromium-browser', '/usr/bin/chromium'].find((p) => existsSync(p))
+  || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 
-if (!existsSync(CHROME)) { console.log('skip: Google Chrome not found at', CHROME); process.exit(0); }
+if (!existsSync(CHROME)) { console.log('skip: Chrome not found (set CHROME_PATH)', CHROME); process.exit(0); }
 if (!existsSync(DATA)) { console.log('skip: test fixture missing:', DATA); process.exit(0); }
 
 // ---- tiny static file server (correct MIME so the browser accepts ES modules) ----
@@ -78,6 +83,8 @@ const dir = mkdtempSync(join(tmpdir(), 'fv-chrome-'));
 const chrome = spawn(CHROME, [
   '--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check',
   '--disable-extensions', '--mute-audio', '--user-data-dir=' + dir,
+  // CI runners launch Chrome as root in a container → these are required there, harmless locally.
+  '--no-sandbox', '--disable-dev-shm-usage',
   '--remote-debugging-port=0', '--window-size=1280,900', 'about:blank',
 ], { stdio: 'ignore' });
 

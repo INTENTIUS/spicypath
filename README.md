@@ -86,6 +86,21 @@ node test/bench.ts         # scale benchmark
 node test/browser.ts      # real-Chrome interaction checks (CDP)
 ```
 
+[GitHub Actions CI](./.github/workflows/ci.yml) runs the test suite (Node logic + real-Chrome
+browser checks + a JDK-generated JFR recording) on every push and PR.
+
+## Deployment
+
+The app is a static site (`src/`) deployed to **Cloudflare Workers Static Assets** —
+[`wrangler.jsonc`](./wrangler.jsonc) serves `./src` with no build step. Deploys run via
+**Cloudflare Workers Builds** (git integration), not from CI. One-time setup:
+
+1. Cloudflare dashboard → **Workers & Pages** → **Create** → **Workers Builds** → connect the
+   `INTENTIUS/spicypath` repo.
+2. **Build command:** *(leave empty — zero-build)*. **Deploy command:** `npx wrangler@4 deploy`.
+3. Every push to `main` then deploys automatically, served at `spicypath.<account>.workers.dev`
+   (add a custom domain/route in the dashboard if desired). No API token lives in GitHub.
+
 ## License
 
 MIT — see [`LICENSE`](./LICENSE). Prior-art acknowledgements are in

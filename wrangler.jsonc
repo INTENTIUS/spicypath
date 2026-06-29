@@ -1,0 +1,17 @@
+{
+  // Static-assets-only Worker (no `main`): Cloudflare Workers Static Assets serves ./src
+  // directly. spicypath is zero-build, so these files ARE what's served — no build step.
+  //
+  // Deploy model (decided): Cloudflare Workers Builds. Connect this repo once in the
+  // Cloudflare dashboard (Workers & Pages → Create → Workers Builds → pick INTENTIUS/spicypath);
+  // set Build command = (empty) and Deploy command = `npx wrangler@4 deploy`. Every push to
+  // main then deploys automatically — no API token in GitHub. GitHub Actions only runs the
+  // test suite (.github/workflows/ci.yml). Served at spicypath.<account>.workers.dev.
+  "name": "spicypath",
+  "compatibility_date": "2026-06-29",
+  "assets": {
+    "directory": "./src"
+    // Defaults are right for this app: html_handling serves index.html at "/", and there is no
+    // client-side routing so not_found_handling stays the default (404 for unknown paths).
+  }
+}
