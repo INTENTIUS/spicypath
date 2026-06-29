@@ -16,14 +16,16 @@ browser (or in Node for the test harness).
 | **perf script** | `.perf`, `.txt` | time-ordered | ⚠️ | `perf script` text output; blank-line-separated sample blocks |
 | **OTLP Profiles** | `.otlp` | aggregated | ✅ | OpenTelemetry profiling signal (`profiles/v1development`, protobuf); shares the pprof value-type mapping. Lossless `pprof ↔ OTLP` in our model |
 | **Gecko** | `.gecko.json` | time-ordered | — | Firefox Profiler / `samply` processed-profile JSON (`meta.version` 5); detected by content sniff. Per-sample timing preserved |
+| **JFR** | `.jfr` | time-ordered | — | JDK Flight Recorder (binary, JVM-only); a native browser-pure decoder (chunk → metadata → constant pool → `jdk.ExecutionSample`). Detected by the `FLR\0` magic. Per-sample timing preserved |
 
 "Plane" is whether per-sample timing survives. Aggregated formats carry no timestamps, so
 the time-ordered flame chart is unavailable for them (the chart tab hides itself when
 `hasTiming` is false — see [`architecture.md`](./architecture.md)).
 
-### Planned
-
-- **JFR** — JVM Flight Recorder (binary, JVM-only); deferred.
+JFR is the one format with no synthetic golden round-trip (it has no emitter — you can't
+fabricate a faithful `.jfr`). Instead `test/parse-jfr-test.ts` generates a *real* recording
+with the local JDK at test time and validates the parser against the `jfr` tool's own output;
+it skips cleanly when no JDK is installed. Nothing binary is committed.
 
 ## Export formats
 

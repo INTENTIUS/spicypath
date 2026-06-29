@@ -7,6 +7,7 @@ import { parsePprofBytes } from './parse-pprof.js';
 import { parseOtlpBytes } from './parse-otlp.js';
 import { parsePerfScriptText } from './parse-perf.js';
 import { parseGeckoText } from './parse-gecko.js';
+import { parseJfrBytes } from './parse-jfr.js';
 
 async function gunzipIfNeeded(bytes) {
   if (bytes.length > 2 && bytes[0] === 0x1f && bytes[1] === 0x8b) {
@@ -19,6 +20,9 @@ async function gunzipIfNeeded(bytes) {
 export async function ingestBytes(name, bytes) {
   const lower = (name || '').toLowerCase();
   const data = await gunzipIfNeeded(bytes);
+
+  // JFR: magic bytes 46 4C 52 00 ('FLR\0') at offset 0 — check before other binary formats.
+  if (data.length >= 4 && data[0] === 0x46 && data[1] === 0x4c && data[2] === 0x52 && data[3] === 0x00) return parseJfrBytes(data);
 
   // extension-driven (fast path). OTLP and pprof are both protobuf, so they can't be told
   // apart by a content sniff — extension is authoritative for OTLP (checked before pprof).

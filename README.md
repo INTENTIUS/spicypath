@@ -8,8 +8,8 @@ profile diffing.
 - **No build, no dependencies.** Plain ES modules and a single Canvas 2D renderer; open it
   and it runs. Nothing is uploaded — parsing happens locally.
 - **Reads common formats:** folded/collapsed, pprof, OTLP Profiles, V8 `.cpuprofile`,
-  speedscope (sampled + evented), `perf script`, and Gecko (Firefox Profiler / `samply`).
-  See [`docs/formats.md`](./docs/formats.md).
+  speedscope (sampled + evented), `perf script`, Gecko (Firefox Profiler / `samply`), and
+  JFR (JDK Flight Recorder). See [`docs/formats.md`](./docs/formats.md).
 - **Views:** Timeline (flame chart) · Aggregated (flame graph) · Sandwich · Radial,
   plus a diff/comparison mode.
 
@@ -75,6 +75,7 @@ node test/diff-test.ts    # diff math
 node test/otlp-test.ts    # pprof <-> OTLP lossless-edge proof
 node test/metrics-window-test.ts # metric-brush windowed re-aggregation
 node test/adapters-test.ts # remote source adapters (Pyroscope/Parca) vs a mock server
+node test/parse-jfr-test.ts # JFR parser vs a JDK-generated recording (skips without a JDK)
 node test/sandwich-test.ts # sandwich focal selection (incl. hub-less profiles)
 node test/sourceline-test.ts # per-line weight aggregation (recursion-safe)
 node test/bench.ts         # scale benchmark

@@ -107,6 +107,16 @@ The differentiating layer — making spicypath not file-only. Remaining M4 work 
   rebuild, not as a volatile node index. Tier A source addressing: links to a bundled sample
   or a live `/debug/pprof` URL reopen the same data; a link whose source was a dropped local
   file degrades with a clear status message. No upload — the hash holds only state + a path/URL.
+- FG-031 JFR ingestion — `src/parse-jfr.js` is a native, browser-pure decoder for JDK Flight
+  Recorder binaries: chunk headers → metadata schema → constant-pool checkpoints →
+  `jdk.ExecutionSample` events, resolving frames to `Class.method` (type IDs resolved by name
+  from metadata, not hardcoded). Per-sample timing preserved; detected by the `FLR\0` magic.
+  No emitter exists for JFR, so instead of a synthetic golden round-trip, `test/parse-jfr-test.ts`
+  generates a *real* recording with the local JDK (`test/gen/JfrWorkload.java`) and asserts the
+  parser's hot leaf matches the `jfr` tool's oracle; it skips when no JDK is present and commits
+  no binary. Cross-checked against a real third-party `.jfr` (leaf ordering matches `jfr print`
+  exactly). Was deferred (🅿️); the JDK-generates-at-test-time approach removed the
+  capture-only/binary-fixture blocker.
 - FG-041 Gecko ingestion — `src/parse-gecko.js` reads the Firefox Profiler / `samply`
   processed-profile JSON (`meta.version` 5), handling both the raw `{schema, data}` and
   processed column-array table forms; per-sample timing is preserved (`hasTiming`, ms axis),
