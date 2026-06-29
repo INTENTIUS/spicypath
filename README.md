@@ -18,7 +18,10 @@ plugin, and it does not own collection or storage — those are permanent non-go
 
 ## Quickstart
 
-Serve the `src/` directory and open it in a browser:
+**Try it live:** [spicypath.intentius.workers.dev](https://spicypath.intentius.workers.dev) — a
+sample loads on start; drop a profile or ⌘K to open your own.
+
+Or run it locally — serve the `src/` directory and open it in a browser:
 
 ```sh
 cd src
@@ -98,8 +101,11 @@ The app is a static site (`src/`) deployed to **Cloudflare Workers Static Assets
 1. Cloudflare dashboard → **Workers & Pages** → **Create** → **Workers Builds** → connect the
    `INTENTIUS/spicypath` repo.
 2. **Build command:** *(leave empty — zero-build)*. **Deploy command:** `npx wrangler@4 deploy`.
-3. Every push to `main` then deploys automatically, served at `spicypath.<account>.workers.dev`
-   (add a custom domain/route in the dashboard if desired). No API token lives in GitHub.
+3. Every push to `main` then deploys automatically. Live at
+   **[spicypath.intentius.workers.dev](https://spicypath.intentius.workers.dev)**. No API token
+   lives in GitHub. _(A custom domain like `spicypath.intentius.io` would require moving the
+   `intentius.io` zone to Cloudflare — its DNS is currently at the registrar pointing to GitHub
+   Pages for the docs.)_
 
 ## License
 

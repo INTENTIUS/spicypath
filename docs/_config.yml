@@ -19,6 +19,7 @@ search_enabled: true
 heading_anchors: true
 
 aux_links:
+  Live app: https://spicypath.intentius.workers.dev
   GitHub: https://github.com/INTENTIUS/spicypath
 aux_links_new_tab: true
 

@@ -10,7 +10,8 @@ browser. Drop in a profile and explore it as a flame graph, a timeline, a sandwi
 (caller/callee), or a radial view — with search, semantic color, auto-collapse, profile
 diffing, and metric track coupling.
 
-[View on GitHub](https://github.com/INTENTIUS/spicypath){: .btn .btn-primary .mr-2 }
+[Try it live](https://spicypath.intentius.workers.dev){: .btn .btn-primary .mr-2 }
+[View on GitHub](https://github.com/INTENTIUS/spicypath){: .btn .mr-2 }
 [Changelog](https://github.com/INTENTIUS/spicypath/blob/main/CHANGELOG.md){: .btn }
 
 ---
