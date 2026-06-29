@@ -14,6 +14,7 @@
 // runtime's default pprof handler doesn't add CORS headers; patch it with one line
 // (see README) or run spicypath from the same origin. A thin proxy is the fallback.
 import { parsePprofBytes } from './parse-pprof.js';
+import { pprofFromResponse } from './source-adapter.js';
 
 const DEFAULT_SECONDS = 5;
 
@@ -24,6 +25,7 @@ async function gunzip(response) {
   return new Uint8Array(await new Response(piped).arrayBuffer());
 }
 
+// Original Slice A export — behavior unchanged so all FG-028 browser checks stay green.
 export async function fetchPprof(url, opts = {}) {
   const seconds = opts.seconds ?? DEFAULT_SECONDS;
   const headers = opts.headers ?? {};
@@ -41,3 +43,26 @@ export async function fetchPprof(url, opts = {}) {
 
   return parsePprofBytes(bytes);
 }
+
+// FG-028 Slice B: debugPprofAdapter — the Slice A path expressed as the shared
+// adapter interface so callers can treat all sources uniformly.
+// opts: { url, seconds?, headers?, signal? }
+export const debugPprofAdapter = {
+  id: 'debug-pprof',
+  label: 'Go /debug/pprof',
+
+  async fetchProfile(opts = {}) {
+    const { url, seconds = DEFAULT_SECONDS, headers = {}, signal } = opts;
+    if (!url) throw new Error('debugPprofAdapter: opts.url is required');
+    const sep = url.includes('?') ? '&' : '?';
+    const fullUrl = `${url}${sep}seconds=${seconds}`;
+    const res = await fetch(fullUrl, { headers, signal });
+    if (!res.ok) throw new Error(`${res.status} ${res.statusText} — ${fullUrl}`);
+    return pprofFromResponse(res);
+  },
+
+  describe(opts = {}) {
+    const { url = '?', seconds = DEFAULT_SECONDS } = opts;
+    return `${url} (${seconds}s)`;
+  },
+};
