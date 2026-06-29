@@ -1,3 +1,8 @@
+---
+title: Architecture
+nav_order: 2
+---
+
 # Architecture
 
 How the viewer is put together: the in-memory profile model, the derived render

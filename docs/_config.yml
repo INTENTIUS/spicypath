@@ -1,0 +1,38 @@
+# GitHub Pages docs site for spicypath. Built from the /docs folder (Jekyll, classic
+# branch build — no Actions needed). The app in /src is NOT part of this site.
+title: spicypath
+description: A fast, zero-build, offline profile inspector — flame graph, timeline, sandwich, radial, and diff.
+
+# just-the-docs via remote theme. Pinned to the v0.3.x line, which is compatible with the
+# GitHub Pages classic Jekyll build (no Gemfile / Actions required).
+remote_theme: just-the-docs/just-the-docs@v0.3.3
+plugins:
+  - jekyll-remote-theme
+
+# Project page lives at https://intentius.github.io/spicypath/
+url: https://intentius.github.io
+baseurl: /spicypath
+
+# Theme options — dark scheme matches spicypath's dev-tool identity.
+color_scheme: dark
+search_enabled: true
+heading_anchors: true
+
+aux_links:
+  GitHub: https://github.com/INTENTIUS/spicypath
+aux_links_new_tab: true
+
+# Repo-meta docs live at the repo root (GitHub renders them specially) — link out rather
+# than duplicate them here.
+nav_external_links:
+  - title: Changelog
+    url: https://github.com/INTENTIUS/spicypath/blob/main/CHANGELOG.md
+  - title: Contributing
+    url: https://github.com/INTENTIUS/spicypath/blob/main/CONTRIBUTING.md
+
+# Keep tooling out of the published site (diagrams/*.svg are kept — they're referenced).
+exclude:
+  - render.sh
+  - "*.dot"
+
+footer_content: "spicypath — MIT. Nothing is uploaded; parsing happens in your browser."

@@ -1,3 +1,8 @@
+---
+title: Formats
+nav_order: 3
+---
+
 # Supported formats
 
 Inputs are detected by extension and a content sniff, gunzipped transparently
