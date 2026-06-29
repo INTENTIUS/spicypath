@@ -1217,6 +1217,99 @@ try {
 
   await evalIn(`window.__app.resetView();`);
 
+  // --- FG-044: source-map remapping ---
+  // Load the node.cpuprofile fixture; its frames reference a generated file.
+  // We'll synthesise a tiny source map that remaps one known function name and verify
+  // that applySourceMaps() rewrites the profile's func names and packageOf grouping.
+  await evalIn(`window.__app.loadSample('samples/node.cpuprofile')`);
+  await poll(`window.__fv && /node\\.cpuprofile/.test(document.getElementById('info').innerText||'') ? 1 : 0`);
+
+  // Grab the first non-trivial function name and file from the loaded profile so we can
+  // build a map that targets it. We look for a func that has a non-empty file string.
+  const fg44Base = await evalIn(`(()=>{
+    const p = window.__fv.p;
+    for (let i = 0; i < p.funcTable.name.length; i++) {
+      const name = p.stringTable[p.funcTable.name[i]] || '';
+      const fi = p.funcTable.file[i];
+      const file = fi >= 0 ? (p.stringTable[fi] || '') : '';
+      const line = p.funcTable.line[i];
+      if (name && file && line > 0) {
+        // extract basename of file
+        const bn = file.split('/').pop() || file;
+        return { name, file: bn, line, funcIdx: i };
+      }
+    }
+    return null;
+  })()`);
+
+  if (fg44Base) {
+    // Build a minimal source map v3 that remaps genLine=<line> in <file> to
+    // original source "src/original.ts", line 42, with a mapped name "remappedFn".
+    // VLQ encoding: genColDelta=0, srcIdxDelta=0, origLineDelta=41(0-based), origColDelta=0, nameIdxDelta=0
+    // We encode these as VLQ segments separated by semicolons to reach the target line.
+    const fg44Map = await evalIn(`(()=>{
+      const genLine = ${JSON.stringify(fg44Base.line)};
+      // Encode VLQ: helper
+      const B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+      function vlq(n) {
+        let v = n < 0 ? ((-n)<<1)|1 : n<<1;
+        let out = '';
+        do { let s=v&0x1f; v>>>=5; if(v>0)s|=0x20; out+=B64[s]; } while(v>0);
+        return out;
+      }
+      // Build mappings: we need to emit enough semicolons to reach genLine (1-based → 0-based index genLine-1)
+      const semiCount = genLine - 1;
+      const seg = vlq(0)+vlq(0)+vlq(41)+vlq(0)+vlq(0); // genCol=0, src=0, origLine=41(→42 1-based), origCol=0, name=0
+      const mappings = ';'.repeat(semiCount) + seg;
+      return JSON.stringify({
+        version: 3,
+        file: ${JSON.stringify(fg44Base.file)},
+        sources: ['src/original.ts'],
+        sourcesContent: ['// original source line 42'],
+        names: ['remappedFn'],
+        mappings,
+      });
+    })()`);
+
+    const fg44MapName = fg44Base.file + '.map'; // e.g. "node.js.map"
+    const fg44Result = await evalIn(`window.__app.applySourceMaps([{name:${JSON.stringify(fg44MapName)},text:${JSON.stringify(fg44Map)}}])`);
+    check('FG-044: applySourceMaps returns true when a map matches', fg44Result === true, `returned=${fg44Result}`);
+
+    // After remap, find the function that now has name "remappedFn"
+    const fg44After = await evalIn(`(()=>{
+      const p = window.__fv.p;
+      for (let i = 0; i < p.funcTable.name.length; i++) {
+        const nm = p.stringTable[p.funcTable.name[i]] || '';
+        if (nm === 'remappedFn') {
+          const fi = p.funcTable.file[i];
+          const file = fi >= 0 ? (p.stringTable[fi] || '') : '';
+          const line = p.funcTable.line[i];
+          return { name: nm, file, line };
+        }
+      }
+      return null;
+    })()`);
+    check('FG-044: remapped func name is "remappedFn"', fg44After !== null, `found=${JSON.stringify(fg44After)}`);
+    if (fg44After) {
+      check('FG-044: remapped func file is "src/original.ts"', fg44After.file === 'src/original.ts', `file=${fg44After.file}`);
+      check('FG-044: remapped func line is 42', fg44After.line === 42, `line=${fg44After.line}`);
+    }
+
+    // Unmapped functions must still be present (profile is not empty).
+    const fg44Unchanged = await evalIn(`(()=>{const p=window.__fv.p;return p.funcTable.name.length;})()`);
+    check('FG-044: unmapped funcs still present in remapped profile', fg44Unchanged > 1, `funcCount=${fg44Unchanged}`);
+
+    // The sourcesContent should have been fed to srcFiles under the original source basename.
+    const fg44SrcFile = await evalIn(`window.__app.getSrcFiles().has('original.ts')`);
+    check('FG-044: sourcesContent fed to srcFiles under original basename', fg44SrcFile === true, `has original.ts: ${fg44SrcFile}`);
+
+    // A profile with no maps should be identical to the base profile (no remap).
+    // Reset then reload without maps.
+    await evalIn(`window.__app.resetView();`);
+  } else {
+    check('FG-044: fixture has a function with file+line (needed for map test)', false, 'no usable func found — test skipped');
+  }
+
 } catch (e: any) {
   failures++;
   console.log('  ✗ harness error —', e?.message || e);

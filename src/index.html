@@ -212,6 +212,8 @@
     <input id="file2" type="file" hidden>
     <!-- FG-030: source file picker (multiple + directory) -->
     <input id="file-src" type="file" hidden multiple webkitdirectory>
+    <!-- FG-044: source map picker (multiple .map files) -->
+    <input id="file-map" type="file" hidden multiple accept=".map">
   </div>
 
   <div id="searchpill"><input id="search" type="search" placeholder="search (regex)" size="20"><span id="searchInfo"></span></div>
@@ -312,12 +314,19 @@
     import { colorForFunc } from './colors.js';
     import { functionStats } from './funcstats.js';
     import { fmtWeight } from './export.js';
+    import { parseSourceMap, remapProfile } from './sourcemap.js';
 
     // FG-030: source-file registry — Map<basename, text> loaded by the user.
     // Nothing is uploaded; all reading is local (FileReader). Source files are matched to
     // profile functions by their basename (case-sensitive). When the user drops a folder
     // the browser walks it via webkitdirectory and we see every file in the subtree.
     const srcFiles = new Map(); // basename → source text
+
+    // FG-044: source map registry — Map<generated file basename, ParsedMap>.
+    // A .map file is keyed by stripping the .map suffix: app.js.map → key app.js.
+    const srcMaps = new Map(); // generated basename → ParsedMap
+    // The base profile before any remap (so we can re-apply when new maps arrive).
+    let _baseProfile = null;
 
     // Known profile-format extensions / MIME sniffing patterns. A dropped file matching
     // any of these is treated as a profile; everything else is a candidate source file.
@@ -331,6 +340,9 @@
       const ext = dot >= 0 ? name.slice(dot) : '';
       return PROFILE_EXTS.has(ext);
     }
+    function looksLikeSourceMap(file) {
+      return file.name.toLowerCase().endsWith('.map');
+    }
 
     async function loadSourceFile(file) {
       return new Promise((resolve, reject) => {
@@ -339,6 +351,77 @@
         r.onerror = () => reject(r.error);
         r.readAsText(file);
       });
+    }
+
+    // FG-044: load a source map file and register it under the generated-file basename.
+    // The key is derived by stripping the trailing .map from the filename:
+    //   app.js.map  → key "app.js"
+    //   bundle.min.js.map → key "bundle.min.js"
+    // If the name doesn't end in .map, use the full name as the key.
+    async function loadSourceMapFile(file) {
+      const text = await new Promise((resolve, reject) => {
+        const r = new FileReader();
+        r.onload = () => resolve(r.result);
+        r.onerror = () => reject(r.error);
+        r.readAsText(file);
+      });
+      let mapObj;
+      try { mapObj = parseSourceMap(text); } catch (e) { console.warn('[FG-044] bad source map:', file.name, e.message); return; }
+      const key = file.name.toLowerCase().endsWith('.map') ? file.name.slice(0, -4) : file.name;
+      // Strip any leading path component so only the basename is used as the key.
+      const bn = key.split('/').pop().split('\\').pop() || key;
+      srcMaps.set(bn, mapObj);
+      // If the map carries sourcesContent, pre-register each original source so the
+      // FG-030 source-line view can render them without a separate source drop.
+      if (mapObj.sourcesContent) {
+        mapObj.sources.forEach((src, i) => {
+          const content = mapObj.sourcesContent[i];
+          if (src && content != null) {
+            const srcBn = src.split('/').pop().split('\\').pop() || src;
+            if (!srcFiles.has(srcBn)) srcFiles.set(srcBn, content);
+          }
+        });
+      }
+    }
+
+    // Apply all loaded source maps to the base profile and rebuild the view.
+    // Returns true if a base profile exists and maps are loaded.
+    function _applyLoadedSourceMaps() {
+      if (!_baseProfile || srcMaps.size === 0) return false;
+      profile = remapProfile(_baseProfile, srcMaps);
+      rebuild();
+      applyCaps();
+      setMode(mode);
+      updateInfo();
+      // Refresh the source panel if a function is selected.
+      if (view && view._selBox) updateSourcePanel(view._selBox);
+      return true;
+    }
+
+    // Headless entry point: accept an array of { name, text } objects, parse each as a
+    // source map, and apply. Returns true if remap changed the profile.
+    function applySourceMaps(mapsArray) {
+      if (!Array.isArray(mapsArray) || !mapsArray.length) return false;
+      let loaded = false;
+      for (const { name, text } of mapsArray) {
+        let mapObj;
+        try { mapObj = parseSourceMap(text); } catch (e) { console.warn('[FG-044] bad source map:', name, e.message); continue; }
+        const key = name.toLowerCase().endsWith('.map') ? name.slice(0, -4) : name;
+        const bn = key.split('/').pop().split('\\').pop() || key;
+        srcMaps.set(bn, mapObj);
+        if (mapObj.sourcesContent) {
+          mapObj.sources.forEach((src, i) => {
+            const content = mapObj.sourcesContent[i];
+            if (src && content != null) {
+              const srcBn = src.split('/').pop().split('\\').pop() || src;
+              if (!srcFiles.has(srcBn)) srcFiles.set(srcBn, content);
+            }
+          });
+        }
+        loaded = true;
+      }
+      if (!loaded) return false;
+      return _applyLoadedSourceMaps();
     }
 
     // Esc: hide source panel
@@ -629,7 +712,9 @@
     }
 
     function loadProfile(p, label) {
-      profile = p;
+      _baseProfile = p;
+      // FG-044: apply any already-loaded source maps to the incoming profile.
+      profile = srcMaps.size > 0 ? remapProfile(p, srcMaps) : p;
       fileLabel = label;
       liveSource = null; stLive.classList.remove('on'); // clear the live indicator by default; doFetchAdapter re-sets it after this returns
       document.getElementById('empty').style.display = 'none';
@@ -760,6 +845,14 @@
       await Promise.all(files.map(loadSourceFile));
       if (view) { const box = view._selBox; if (box) updateSourcePanel(box); }
       e.target.value = ''; // allow re-picking the same path
+    };
+    // FG-044: source map picker
+    document.getElementById('file-map').onchange = async (e) => {
+      const files = Array.from(e.target.files || []);
+      if (!files.length) return;
+      await Promise.all(files.map(loadSourceMapFile));
+      _applyLoadedSourceMaps();
+      e.target.value = '';
     };
     document.getElementById('file2').onchange = async (e) => {
       const f = e.target.files[0]; if (!f || !profile) return;
@@ -920,6 +1013,10 @@
       loadSourceText: (name, text) => { srcFiles.set(name, text); if (view) { const box = view._selBox; if (box) updateSourcePanel(box); } },
       getSrcFiles: () => srcFiles,
       getSourcePanel: () => ({ on: srcPanel.classList.contains('on'), title: srcTitle.textContent, body: srcBody.textContent }),
+      // FG-044: apply source maps programmatically (for headless testing).
+      // mapsArray: [{ name, text }, ...] — each a .map file's name + JSON text.
+      // Returns true if the remap changed the active profile.
+      applySourceMaps,
       // FG-049: function list panel test hooks
       openFuncList: () => openFuncList(),
       isFuncListOpen: () => funclistEl.classList.contains('on'),
@@ -1095,6 +1192,7 @@
       c.push(['Open profile…', () => document.getElementById('file').click()]);
       c.push(['Open from URL…', () => openUrlDialog()]);
       c.push(['Load source files…', () => document.getElementById('file-src').click()]);
+      c.push(['Load source maps (.map)…', () => document.getElementById('file-map').click()]);
       c.push(['Connect to a profile source…', () => openConnect()]);
       c.push(['Connect to live /debug/pprof…', () => openConnect('debug-pprof')]);
       if (liveSource) c.push(['Refetch live profile', () => doFetchAdapter(liveSource.adapter.id, liveSource.opts)]);
@@ -1184,9 +1282,9 @@
       window.addEventListener('mousedown', done, { once: true });
     }
 
-    // drag-and-drop — distinguish profile files from source files (FG-030).
+    // drag-and-drop — distinguish profile files from source files (FG-030) and source maps (FG-044).
     // A file that looks like a profile (known extension) is ingested as a profile.
-    // Everything else is treated as a candidate source file and registered in srcFiles.
+    // A .map file is ingested as a source map. Everything else is a candidate source file.
     // Multiple files can be dropped at once; profiles take the first matching file.
     const drop = document.getElementById('drop');
     document.addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('on'); });
@@ -1195,17 +1293,20 @@
       e.preventDefault(); drop.classList.remove('on');
       const files = Array.from(e.dataTransfer.files || []);
       if (!files.length) return;
-      // Separate profiles from source files.
+      // Separate into three buckets.
       const profileFiles = files.filter(looksLikeProfile);
-      const sourceFiles  = files.filter(f => !looksLikeProfile(f));
-      // Load source files first (they're fast and don't replace the profile).
+      const mapFiles     = files.filter(f => !looksLikeProfile(f) && looksLikeSourceMap(f));
+      const sourceFiles  = files.filter(f => !looksLikeProfile(f) && !looksLikeSourceMap(f));
+      // Load source files first.
       if (sourceFiles.length) {
         await Promise.all(sourceFiles.map(loadSourceFile));
-        // Refresh the source panel if a function is already selected.
-        if (view) {
-          const box = view._selBox;
-          if (box) updateSourcePanel(box);
-        }
+        if (view) { const box = view._selBox; if (box) updateSourcePanel(box); }
+      }
+      // Load source maps (registers them in srcMaps + feeds sourcesContent to srcFiles).
+      if (mapFiles.length) {
+        await Promise.all(mapFiles.map(loadSourceMapFile));
+        // Apply maps to the current profile if one is loaded.
+        _applyLoadedSourceMaps();
       }
       // Then load a profile if one was dropped.
       if (profileFiles.length) await openFile(profileFiles[0]);

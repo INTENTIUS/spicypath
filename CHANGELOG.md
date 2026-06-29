@@ -10,6 +10,14 @@ linkable — the entries record *what* shipped and *why*, not the original commi
 
 ## Enhancements (post-M4)
 
+- FG-044 Source-map remapping — transpiled/bundled profiles can be mapped back to original
+  source. `src/sourcemap.js` is a pure Source Map v3 decoder (base64-VLQ `mappings` →
+  `lookup(line, col)`, independently verified against the spec's canonical example) plus
+  `remapProfile(profile, maps)`, which rewrites each frame's name/file/line generated→original
+  (matched by generated-file basename) and re-interns a new profile, leaving weights/stacks
+  intact. `.map` files load by drag-drop / picker; embedded `sourcesContent` feeds the FG-030
+  source-line view (original source with no separate drop). Labels, color/grouping, and search
+  then operate on original names. Profiles with no maps are unchanged.
 - FG-046 First-class allocation/heap profiles — allocation profiles (multiple value types incl.
   a bytes metric) are now a verified, covered path: the weight token cycles `alloc_bytes` ↔
   `alloc_objects`, byte-valued weights format as KB/MB/GB in the total and the Markdown report
