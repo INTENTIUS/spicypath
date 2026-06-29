@@ -9,8 +9,8 @@ remote_theme: just-the-docs/just-the-docs@v0.3.3
 plugins:
   - jekyll-remote-theme
 
-# Project page lives at https://intentius.github.io/spicypath/
-url: https://intentius.github.io
+# Project page — the INTENTIUS org serves Pages under its custom domain.
+url: https://intentius.io
 baseurl: /spicypath
 
 # Theme options — dark scheme matches spicypath's dev-tool identity.

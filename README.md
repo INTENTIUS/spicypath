@@ -52,7 +52,7 @@ to open your own; `.gz` is decompressed automatically.
 
 ## Documentation
 
-📖 **[Documentation site](https://intentius.github.io/spicypath/)** — the docs, rendered with
+📖 **[Documentation site](https://intentius.io/spicypath/)** — the docs, rendered with
 search and navigation.
 
 - [`docs/architecture.md`](./docs/architecture.md) — the canonical data model and the
