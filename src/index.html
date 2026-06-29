@@ -98,21 +98,24 @@
     #pal-list .row { padding: 7px 11px; border-radius: 6px; color: var(--fg); font-size: 13px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     #pal-list .row.sel { background: var(--accent); color: var(--on-accent); }
     #pal-list .empty { padding: 10px 12px; color: var(--faint); font-size: 12px; }
-    /* live /debug/pprof connect overlay (FG-028) */
+    /* profile source picker overlay (FG-028 generalized) */
     #connect { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; background: rgba(0,0,0,0.4); z-index: 11; }
     #connect.on { display: flex; }
-    #connect .box { width: min(480px, 92vw); background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 18px 20px; box-shadow: 0 16px 50px rgba(0,0,0,0.55); }
+    #connect .box { width: min(520px, 92vw); background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 18px 20px; box-shadow: 0 16px 50px rgba(0,0,0,0.55); }
     #connect h3 { margin: 0 0 14px; font-size: 14px; color: var(--fg); }
     #connect label { display: block; font-size: 11px; color: var(--dim); margin-bottom: 4px; }
-    #connect input { width: 100%; background: var(--bg); color: var(--fg); border: 1px solid var(--line); border-radius: 6px; padding: 6px 9px; font: 13px Menlo, Consolas, monospace; box-sizing: border-box; outline: none; margin-bottom: 10px; }
-    #connect input:focus { border-color: var(--accent); }
+    #connect input, #connect select { width: 100%; background: var(--bg); color: var(--fg); border: 1px solid var(--line); border-radius: 6px; padding: 6px 9px; font: 13px Menlo, Consolas, monospace; box-sizing: border-box; outline: none; margin-bottom: 10px; }
+    #connect input:focus, #connect select:focus { border-color: var(--accent); }
     #connect .row { display: flex; gap: 8px; align-items: center; margin-top: 4px; }
     #connect .row label { margin: 0; white-space: nowrap; }
     #connect .row input { width: 64px; margin: 0; }
     #connect .btns { display: flex; gap: 8px; margin-top: 14px; justify-content: flex-end; }
     #connect button { padding: 5px 14px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel); color: var(--fg); font: inherit; cursor: pointer; }
     #connect button.primary { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+    #connect .fields { display: none; }
+    #connect .fields.on { display: block; }
     #st-live { display: none; background: #1a4a2e; border-color: #2d7a4f; color: #4ade80; }
+    #st-live.on { display: inline-block; } /* shown while a live source is active (overrides the base none) */
   </style>
 </head>
 <body>
@@ -178,13 +181,46 @@
   <div id="theme-picker"></div>
   <div id="connect">
     <div class="box">
-      <h3>Connect to live /debug/pprof</h3>
-      <label>Endpoint URL</label>
-      <input id="cn-url" type="url" value="http://localhost:6060/debug/pprof/profile" spellcheck="false">
-      <div class="row">
-        <label>Sample duration</label>
-        <input id="cn-sec" type="number" min="1" max="60" value="5">
-        <span style="color:var(--dim);font-size:12px">seconds</span>
+      <h3>Connect to a profile source</h3>
+      <label>Backend</label>
+      <select id="cn-backend">
+        <option value="debug-pprof">Go /debug/pprof</option>
+        <option value="pyroscope">Pyroscope</option>
+        <option value="parca">Parca</option>
+      </select>
+      <!-- debug-pprof fields -->
+      <div class="fields" id="cn-fields-debug">
+        <label>Endpoint URL</label>
+        <input id="cn-url" type="url" value="http://localhost:6060/debug/pprof/profile" spellcheck="false">
+        <div class="row">
+          <label>Sample duration</label>
+          <input id="cn-sec" type="number" min="1" max="60" value="5">
+          <span style="color:var(--dim);font-size:12px">seconds</span>
+        </div>
+      </div>
+      <!-- pyroscope fields -->
+      <div class="fields" id="cn-fields-pyroscope">
+        <label>Base URL</label>
+        <input id="cn-pyro-base" type="url" value="http://localhost:4040" spellcheck="false">
+        <label>Query (app + profile type)</label>
+        <input id="cn-pyro-query" type="text" value="myapp.cpu{}" spellcheck="false">
+        <div class="row">
+          <label>Last</label>
+          <input id="cn-pyro-mins" type="number" min="1" max="1440" value="15">
+          <span style="color:var(--dim);font-size:12px">minutes</span>
+        </div>
+      </div>
+      <!-- parca fields -->
+      <div class="fields" id="cn-fields-parca">
+        <label>Base URL</label>
+        <input id="cn-parca-base" type="url" value="http://localhost:7070" spellcheck="false">
+        <label>Query (label selector)</label>
+        <input id="cn-parca-query" type="text" value="process_cpu:cpu:nanoseconds:cpu:nanoseconds" spellcheck="false">
+        <div class="row">
+          <label>Last</label>
+          <input id="cn-parca-mins" type="number" min="1" max="1440" value="15">
+          <span style="color:var(--dim);font-size:12px">minutes</span>
+        </div>
       </div>
       <div class="btns">
         <button id="cn-cancel">Cancel</button>
@@ -203,7 +239,9 @@
     import { layout } from './layout.js';
     import { buildCallNodeTable } from './callnode.js';
     import { setTheme, listThemes, getThemeName, getTokens, luminance } from './theme.js';
-    import { fetchPprof } from './fetch-pprof.js';
+    import { debugPprofAdapter } from './fetch-pprof.js';
+    import { pyroscopeAdapter } from './source-pyroscope.js';
+    import { parcaAdapter } from './source-parca.js';
     import { aggregateByLine, funcBasename } from './sourceline.js';
     import { colorForFunc } from './colors.js';
 
@@ -524,6 +562,7 @@
     function loadProfile(p, label) {
       profile = p;
       fileLabel = label;
+      liveSource = null; stLive.classList.remove('on'); // clear the live indicator by default; doFetchAdapter re-sets it after this returns
       document.getElementById('empty').style.display = 'none';
       wtSel.innerHTML = p.capabilities.weightTypes.map((t) => `<option>${t}</option>`).join('');
       wtSel.value = p.capabilities.weightTypes.includes('cpu_nanos') ? 'cpu_nanos' : p.capabilities.weightTypes[0];
@@ -609,39 +648,127 @@
       } catch (err) { info.textContent = `compare failed: ${err.message}`; }
     };
 
-    // FG-028: live /debug/pprof connect
-    let liveSource = null; // { url, seconds } when a live source is active
+    // FG-028: profile source picker (Slice A: debug-pprof; Slice B: pyroscope, parca)
+    // liveSource holds the generalized { adapter, opts } pair for the active remote source.
+    let liveSource = null; // { adapter, opts } when a remote source is active
     const connectOverlay = document.getElementById('connect');
     const cnUrl = document.getElementById('cn-url');
     const cnSec = document.getElementById('cn-sec');
     const stLive = document.getElementById('st-live');
-    function openConnect() { connectOverlay.classList.add('on'); cnUrl.focus(); cnUrl.select(); }
+    const cnBackend = document.getElementById('cn-backend');
+
+    // Adapter registry keyed by backend id
+    const ADAPTERS = {
+      'debug-pprof': debugPprofAdapter,
+      'pyroscope': pyroscopeAdapter,
+      'parca': parcaAdapter,
+    };
+
+    // Show/hide per-backend field groups when the selector changes
+    function syncConnectFields() {
+      const b = cnBackend.value;
+      document.getElementById('cn-fields-debug').classList.toggle('on', b === 'debug-pprof');
+      document.getElementById('cn-fields-pyroscope').classList.toggle('on', b === 'pyroscope');
+      document.getElementById('cn-fields-parca').classList.toggle('on', b === 'parca');
+    }
+    cnBackend.onchange = syncConnectFields;
+
+    function openConnect(preferBackend) {
+      if (preferBackend && ADAPTERS[preferBackend]) { cnBackend.value = preferBackend; }
+      syncConnectFields();
+      connectOverlay.classList.add('on');
+      // Focus the first visible URL field
+      const first = connectOverlay.querySelector('.fields.on input');
+      if (first) { first.focus(); first.select(); }
+    }
     function closeConnect() { connectOverlay.classList.remove('on'); }
-    async function doFetchPprof(url, seconds) {
-      const label = new URL(url).host;
-      info.textContent = `fetching ${label} (${seconds}s)…`;
+
+    // Collect opts from the overlay form for the selected backend
+    function connectOpts() {
+      const b = cnBackend.value;
+      if (b === 'debug-pprof') {
+        return { url: cnUrl.value.trim(), seconds: +cnSec.value };
+      }
+      if (b === 'pyroscope') {
+        const mins = +(document.getElementById('cn-pyro-mins').value) || 15;
+        const until = Math.floor(Date.now() / 1000);
+        const from  = until - mins * 60;
+        return {
+          baseUrl: document.getElementById('cn-pyro-base').value.trim(),
+          query:   document.getElementById('cn-pyro-query').value.trim(),
+          from, until,
+        };
+      }
+      if (b === 'parca') {
+        const mins  = +(document.getElementById('cn-parca-mins').value) || 15;
+        const until = Date.now();
+        const from  = until - mins * 60 * 1000;
+        return {
+          baseUrl: document.getElementById('cn-parca-base').value.trim(),
+          query:   document.getElementById('cn-parca-query').value.trim(),
+          from, until,
+        };
+      }
+      return {};
+    }
+
+    // Core: fetch via any adapter, load the resulting Profile, update liveSource + token.
+    // This is the single code path for ALL remote sources.
+    async function doFetchAdapter(adapterId, opts) {
+      const adapter = ADAPTERS[adapterId];
+      if (!adapter) { info.textContent = `unknown backend: ${adapterId}`; return; }
+      const label = adapter.describe(opts);
+      info.textContent = `fetching ${label}…`;
       try {
-        const p = await fetchPprof(url, { seconds: +seconds });
-        liveSource = { url, seconds };
-        stLive.style.display = '';
-        stLive.title = `live: ${url} — click to refetch`;
-        _hashSource = { type: 'live', url, seconds: +seconds };
-        loadProfile(p, label);
+        const p = await adapter.fetchProfile(opts);
+        // For Slice A backward-compat: keep _hashSource for /debug/pprof
+        if (adapterId === 'debug-pprof') {
+          _hashSource = { type: 'live', url: opts.url, seconds: opts.seconds };
+        } else {
+          _hashSource = null; // query sources not yet addressable via URL hash
+        }
+        loadProfile(p, label);            // clears the live token by default…
+        liveSource = { adapter, opts };   // …then re-mark this as a live source
+        stLive.classList.add('on');
+        stLive.title = `live: ${label} — click to refetch`;
       } catch (e) {
         info.textContent = `live fetch failed: ${e.message}`;
         console.error('[FG-028]', e);
       }
     }
-    document.getElementById('cn-fetch').onclick = () => { closeConnect(); doFetchPprof(cnUrl.value.trim(), cnSec.value); };
+
+    // Slice A backward-compat shim: called from existing code paths (hash restore, __app.fetchPprofUrl)
+    async function doFetchPprof(url, seconds) {
+      return doFetchAdapter('debug-pprof', { url, seconds: +seconds });
+    }
+
+    document.getElementById('cn-fetch').onclick = () => { const b = cnBackend.value; const opts = connectOpts(); closeConnect(); doFetchAdapter(b, opts); };
     document.getElementById('cn-cancel').onclick = closeConnect;
     connectOverlay.onmousedown = (e) => { if (e.target === connectOverlay) closeConnect(); };
-    cnUrl.onkeydown = cnSec.onkeydown = (e) => { if (e.key === 'Enter') { closeConnect(); doFetchPprof(cnUrl.value.trim(), cnSec.value); } else if (e.key === 'Escape') { closeConnect(); e.stopPropagation(); } };
-    stLive.onclick = () => { if (liveSource) doFetchPprof(liveSource.url, liveSource.seconds); };
+    // Enter submits from any field inside the overlay; Escape dismisses.
+    connectOverlay.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { const b = cnBackend.value; const opts = connectOpts(); closeConnect(); doFetchAdapter(b, opts); }
+      else if (e.key === 'Escape') { closeConnect(); e.stopPropagation(); }
+    });
+    stLive.onclick = () => { if (liveSource) doFetchAdapter(liveSource.adapter.id, liveSource.opts); };
+
+    // Initialize field visibility (default = debug-pprof)
+    syncConnectFields();
 
     // test hook (test/browser.ts fuzzer) — drives transitions without file dialogs
     window.__app = {
       setMode, setViewType, resetView, loadSample, setTheme: applyTheme, listThemes,
       fetchPprofUrl: (url, seconds = 5) => doFetchPprof(url, seconds),
+      // FG-028 Slice B: headless hooks for Pyroscope and Parca adapters.
+      // Each goes through the real adapter → loadProfile → liveSource → token path.
+      // Pyroscope: from/until are Unix epoch SECONDS.
+      fetchViaPyroscope: (opts) => doFetchAdapter('pyroscope', opts),
+      // Parca: from/until are Unix epoch MILLISECONDS.
+      fetchViaParca: (opts) => doFetchAdapter('parca', opts),
+      // Generic hook: fetchVia(backendId, opts) for any registered adapter.
+      fetchVia: (backendId, opts) => doFetchAdapter(backendId, opts),
+      // Expose liveSource so tests can inspect it.
+      getLiveSource: () => liveSource,
       setSearch: (q) => { searchEl.value = q; if (view) view.setSearch(q); if (!_restoringHash) _scheduleHashWrite(); },
       // FG-025 pass 1: inject metric series into the active profile and redraw without a reload.
       // Allows testing track lanes without a parser that emits metrics.
@@ -713,8 +840,9 @@
       const c = [];
       c.push(['Open profile…', () => document.getElementById('file').click()]);
       c.push(['Load source files…', () => document.getElementById('file-src').click()]);
-      c.push(['Connect to live /debug/pprof…', () => openConnect()]);
-      if (liveSource) c.push(['Refetch live profile', () => doFetchPprof(liveSource.url, liveSource.seconds)]);
+      c.push(['Connect to a profile source…', () => openConnect()]);
+      c.push(['Connect to live /debug/pprof…', () => openConnect('debug-pprof')]);
+      if (liveSource) c.push(['Refetch live profile', () => doFetchAdapter(liveSource.adapter.id, liveSource.opts)]);
       c.push(['Compare profile…', () => document.getElementById('file2').click()]);
       for (const [label, path] of SAMPLES) c.push(['Sample: ' + label, () => loadSample(path)]);
       c.push(['Mode: Timeline', () => setMode('chart')]);

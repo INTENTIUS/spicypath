@@ -120,9 +120,15 @@ The differentiating layer — making spicypath not file-only. Remaining M4 work 
   `go.pprof` survives a pprof→OTLP→model round-trip. Golden 42/42, ingest 44/44.
 - FG-026 perf-script parser + emitter (timed; blank-line sample blocks). Wired into golden +
   ingest, synthesized with no Linux dependency.
-- FG-028 (Slice A) Live `/debug/pprof` fetch — `src/fetch-pprof.js`: a time-scoped HTTP GET
-  feeding the existing pprof parser into the same load path as a dropped file. The step that
-  makes spicypath not file-only. (Slice B, the Pyroscope/Parca query adapters, is open.)
+- FG-028 Remote source adapters — point spicypath at a live source, not just files.
+  - Slice A: live `/debug/pprof` fetch (`src/fetch-pprof.js`) — a time-scoped HTTP GET feeding
+    the existing pprof parser into the same load path as a dropped file.
+  - Slice B: a backend-agnostic adapter interface (`src/source-adapter.js`: `{ id, label,
+    fetchProfile, describe }`) with Pyroscope (`render?format=pprof`) and Parca (Connect-JSON
+    `{pprof: base64}` envelope) query adapters, all reusing `parsePprofBytes`. A source picker
+    in the shell (backend + query + time range, with per-backend epoch units) routes every
+    result through the same load path; the live token + refetch re-run the same adapter. Driven
+    in tests by mock Pyroscope/Parca endpoints. _Live-tail streaming deferred._
 - FG-032 Real-browser test harness — `test/browser.ts` drives the system Chrome over the
   DevTools Protocol using only Node built-ins (no selenium/puppeteer), asserting computed
   layout and state.

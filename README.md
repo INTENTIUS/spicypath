@@ -37,6 +37,8 @@ to open your own; `.gz` is decompressed automatically.
 - **Zoom** by double-clicking a frame or span; **Esc** resets.
 - **Diff** two profiles with *compare* — red marks regressions, blue improvements.
 - **Export** the current profile as `.speedscope.json`, `.folded`, or an `.svg` snapshot.
+- **Connect to a live source** — beyond files, fetch from a Go `/debug/pprof` endpoint or query
+  a Pyroscope / Parca backend (⌘K → *Connect to a profile source*); the live token refetches.
 - **Metrics** — in Timeline, attach metric tracks (CPU/RAM/…) locked to the time axis: hover a
   track to light the stack at that instant, hover a frame to band its span on the tracks, and
   brush a range to see which functions dominated that window.
@@ -72,6 +74,7 @@ node test/export-test.ts  # export → re-import stability
 node test/diff-test.ts    # diff math
 node test/otlp-test.ts    # pprof <-> OTLP lossless-edge proof
 node test/metrics-window-test.ts # metric-brush windowed re-aggregation
+node test/adapters-test.ts # remote source adapters (Pyroscope/Parca) vs a mock server
 node test/sandwich-test.ts # sandwich focal selection (incl. hub-less profiles)
 node test/sourceline-test.ts # per-line weight aggregation (recursion-safe)
 node test/bench.ts         # scale benchmark

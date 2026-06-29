@@ -531,7 +531,7 @@ try {
     // 1. fetch from mock → flame graph renders without touching a file
     await evalIn(`window.__app.fetchPprofUrl(${JSON.stringify(mockSrv.url + '/debug/pprof/profile')}, 3)`);
     await poll(`window.__fv && window.__fv.boxes && window.__fv.boxes.length > 0 && !/fetching/.test(document.getElementById('info').innerText||'') ? 1 : 0`);
-    const liveState = await evalIn(`(()=>{const f=window.__fv;return {boxes:f.boxes.length,live:!!document.getElementById('st-live').style.display||document.getElementById('st-live').style.display!=='none',mode:f.mode};})()`);
+    const liveState = await evalIn(`(()=>{const f=window.__fv;const tok=document.getElementById('st-live');return {boxes:f.boxes.length,live:getComputedStyle(tok).display!=='none',mode:f.mode};})()`);
     check('FG-028: live fetch renders flame graph (boxes>0, not from file)', liveState.boxes > 0 && liveState.mode === 'graph', JSON.stringify(liveState));
     check('FG-028: #st-live token becomes visible after fetch', liveState.live, JSON.stringify(liveState));
     check('FG-028: mock server received ?seconds=3', mockSrv.lastSeconds === '3', `lastSeconds=${mockSrv.lastSeconds}`);
@@ -552,6 +552,76 @@ try {
     check('FG-028: prior profile still visible after fetch error', afterErr.boxes > 0, `boxes=${afterErr.boxes}`);
   } finally {
     mockSrv.close();
+  }
+
+  // --- FG-028 Slice B: Pyroscope + Parca query adapters ---
+  const mockSrvB = await startMockPprofServer();
+  try {
+    // Reset to a known baseline (vertx speedscope) before each adapter test.
+    await evalIn(`window.__app.loadSample('samples/real-vertx.speedscope.json')`);
+    await poll(`window.__fv && /real-vertx/.test(document.getElementById('info').innerText||'') ? 1 : 0`);
+
+    // --- Pyroscope adapter ---
+    const pyroFrom  = Math.floor(Date.now() / 1000) - 900; // 15 min ago (epoch seconds)
+    const pyroUntil = Math.floor(Date.now() / 1000);
+    const pyroOpts  = { baseUrl: mockSrvB.url, query: 'testapp.cpu{}', from: pyroFrom, until: pyroUntil };
+    await evalIn(`window.__app.fetchViaPyroscope(${JSON.stringify(pyroOpts)})`);
+    await poll(`window.__fv && window.__fv.boxes && window.__fv.boxes.length > 0 && !/fetching/.test(document.getElementById('info').innerText||'') ? 1 : 0`);
+
+    const pyroState = await evalIn(`(()=>{const f=window.__fv;const tok=document.getElementById('st-live');return {boxes:f.boxes.length,mode:f.mode,liveVisible:getComputedStyle(tok).display!=='none',liveTitle:tok.title};})()`);
+    check('FG-028B: Pyroscope fetch renders flame graph (boxes>0)', pyroState.boxes > 0 && pyroState.mode === 'graph', JSON.stringify(pyroState));
+    check('FG-028B: #st-live token visible after Pyroscope fetch', pyroState.liveVisible, JSON.stringify(pyroState));
+    check('FG-028B: mock Pyroscope received correct params', mockSrvB.lastPyroscopeParams !== null && mockSrvB.lastPyroscopeParams.query === 'testapp.cpu{}' && mockSrvB.lastPyroscopeParams.format === 'pprof' && !!mockSrvB.lastPyroscopeParams.from && !!mockSrvB.lastPyroscopeParams.until, JSON.stringify(mockSrvB.lastPyroscopeParams));
+    check('FG-028B: Pyroscope from/until sent as epoch seconds (no ms)', mockSrvB.lastPyroscopeParams !== null && +mockSrvB.lastPyroscopeParams.from < 1e12, `from=${mockSrvB.lastPyroscopeParams?.from}`);
+
+    // Refetch Pyroscope — liveSource re-runs the adapter, incrementing the count
+    const pyroBefore = mockSrvB.pyroscopeFetchCount;
+    const pyroSrc = await evalIn(`(()=>{const ls=window.__app.getLiveSource();return ls ? {id:ls.adapter.id} : null;})()`);
+    await evalIn(`window.__app.getLiveSource() && window.__app.fetchVia(window.__app.getLiveSource().adapter.id, window.__app.getLiveSource().opts)`);
+    await poll(`window.__fv && window.__fv.boxes && window.__fv.boxes.length > 0 && !/fetching/.test(document.getElementById('info').innerText||'') ? 1 : 0`);
+    check('FG-028B: Pyroscope refetch re-pulls (count increments)', mockSrvB.pyroscopeFetchCount > pyroBefore, `pyroscopeFetchCount ${pyroBefore} → ${mockSrvB.pyroscopeFetchCount} src=${JSON.stringify(pyroSrc)}`);
+
+    // Error on Pyroscope: bad host → status shows error, existing profile intact
+    const pyroBoxesBefore = await evalIn(`window.__fv.boxes.length`);
+    await evalIn(`window.__app.fetchViaPyroscope({baseUrl:'http://127.0.0.1:1',query:'x.cpu{}',from:${pyroFrom},until:${pyroUntil}})`);
+    await new Promise((r) => setTimeout(r, 600));
+    const pyroErr = await evalIn(`(()=>{return {info:document.getElementById('info').innerText||'',boxes:window.__fv?window.__fv.boxes.length:0};})()`);
+    check('FG-028B: Pyroscope error surfaces in status line', /fail|error|refused|connect/i.test(pyroErr.info), `info="${pyroErr.info}"`);
+    check('FG-028B: profile intact after Pyroscope error', pyroErr.boxes > 0, `boxes=${pyroErr.boxes}`);
+
+    // Reload a clean baseline for Parca test
+    await evalIn(`window.__app.loadSample('samples/real-vertx.speedscope.json')`);
+    await poll(`window.__fv && /real-vertx/.test(document.getElementById('info').innerText||'') ? 1 : 0`);
+
+    // --- Parca adapter ---
+    const parcaUntil = Date.now();                  // epoch milliseconds
+    const parcaFrom  = parcaUntil - 15 * 60 * 1000;
+    const parcaOpts  = { baseUrl: mockSrvB.url, query: 'process_cpu:cpu:nanoseconds:cpu:nanoseconds{job="test"}', from: parcaFrom, until: parcaUntil };
+    await evalIn(`window.__app.fetchViaParca(${JSON.stringify(parcaOpts)})`);
+    await poll(`window.__fv && window.__fv.boxes && window.__fv.boxes.length > 0 && !/fetching/.test(document.getElementById('info').innerText||'') ? 1 : 0`);
+
+    const parcaState = await evalIn(`(()=>{const f=window.__fv;const tok=document.getElementById('st-live');return {boxes:f.boxes.length,mode:f.mode,liveVisible:getComputedStyle(tok).display!=='none'};})()`);
+    check('FG-028B: Parca fetch renders flame graph (boxes>0)', parcaState.boxes > 0 && parcaState.mode === 'graph', JSON.stringify(parcaState));
+    check('FG-028B: #st-live token visible after Parca fetch', parcaState.liveVisible, JSON.stringify(parcaState));
+    check('FG-028B: mock Parca received correct params', mockSrvB.lastParcaParams !== null && !!mockSrvB.lastParcaParams.query && !!mockSrvB.lastParcaParams.start && !!mockSrvB.lastParcaParams.end, JSON.stringify(mockSrvB.lastParcaParams));
+    check('FG-028B: Parca start/end sent as epoch milliseconds (>=1e12)', mockSrvB.lastParcaParams !== null && +mockSrvB.lastParcaParams.start >= 1e12, `start=${mockSrvB.lastParcaParams?.start}`);
+
+    // Refetch Parca — liveSource re-runs the adapter, incrementing the count
+    const parcaBefore = mockSrvB.parcaFetchCount;
+    await evalIn(`window.__app.getLiveSource() && window.__app.fetchVia(window.__app.getLiveSource().adapter.id, window.__app.getLiveSource().opts)`);
+    await poll(`window.__fv && window.__fv.boxes && window.__fv.boxes.length > 0 && !/fetching/.test(document.getElementById('info').innerText||'') ? 1 : 0`);
+    check('FG-028B: Parca refetch re-pulls (count increments)', mockSrvB.parcaFetchCount > parcaBefore, `parcaFetchCount ${parcaBefore} → ${mockSrvB.parcaFetchCount}`);
+
+    // Error on Parca: bad host → status shows error, existing profile intact
+    const parcaBoxesBefore = await evalIn(`window.__fv.boxes.length`);
+    await evalIn(`window.__app.fetchViaParca({baseUrl:'http://127.0.0.1:1',query:'x',from:${parcaFrom},until:${parcaUntil}})`);
+    await new Promise((r) => setTimeout(r, 600));
+    const parcaErr = await evalIn(`(()=>{return {info:document.getElementById('info').innerText||'',boxes:window.__fv?window.__fv.boxes.length:0};})()`);
+    check('FG-028B: Parca error surfaces in status line', /fail|error|refused|connect/i.test(parcaErr.info), `info="${parcaErr.info}"`);
+    check('FG-028B: profile intact after Parca error', parcaErr.boxes > 0, `boxes=${parcaErr.boxes}`);
+
+  } finally {
+    mockSrvB.close();
   }
 
   // --- FG-029: state-in-URL — hash encodes view state and restores it ---
