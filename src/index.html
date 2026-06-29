@@ -264,7 +264,7 @@
     import { FlameView } from './render-canvas.js';
     import { RadialView } from './view-radial.js';
     import { ingestFile, ingestBytes } from './ingest.js';
-    import { exportSpeedscope, exportFolded } from './export.js';
+    import { exportSpeedscope, exportFolded, exportMarkdown } from './export.js';
     import { buildDiff } from './diff.js';
     import { renderSVG } from './render-svg.js';
     import { layout } from './layout.js';
@@ -669,6 +669,7 @@
       if (kind === 'speedscope') download('profile.speedscope.json', exportSpeedscope(profile, wt), 'application/json');
       else if (kind === 'folded') download('profile.folded', exportFolded(profile, wt), 'text/plain');
       else if (kind === 'svg') { const ct = buildCallNodeTable(profile, 0, wt); const boxes = layout(ct, { width: 1400, minWidth: 0.5, collapse: true }); download('profile.svg', renderSVG(boxes, profile, { width: 1400, title: 'flame graph export' }), 'image/svg+xml'); }
+      else if (kind === 'markdown') download('profile.md', exportMarkdown(profile, wt), 'text/markdown');
     }
     function toggleCollapse() { collapsed = !collapsed; if (view) view.setCollapse(collapsed); syncCollapseToken(); }
     function syncCollapseToken() {
@@ -914,6 +915,7 @@
       c.push(['Export: speedscope JSON', () => doExport('speedscope')]);
       c.push(['Export: folded', () => doExport('folded')]);
       c.push(['Export: SVG snapshot', () => doExport('svg')]);
+      c.push(['Export: Markdown report', () => doExport('markdown')]);
       c.push(['Toggle color legend', () => toggleLegend()]);
       c.push(['Help / keyboard shortcuts', () => toggleHelp()]);
       for (const name of listThemes()) c.push(['Theme: ' + name + (name === getThemeName() ? ' ✓' : ''), () => applyTheme(name)]);

@@ -10,6 +10,12 @@ linkable — the entries record *what* shipped and *why*, not the original commi
 
 ## Enhancements (post-M4)
 
+- FG-045 Markdown hotspot report export — Export → "Markdown report" writes a portable
+  `.md`: a metadata header (weight type + unit · total · counts), a ranked **Top functions**
+  table (self/total, value + %, `file:line`, units-aware), and a **Hottest stacks** section.
+  Backed by a new pure `src/funcstats.js` (`functionStats(ct, profile)`) that computes per-
+  function self + recursion-safe once-per-sample total for every function in one pass — shared
+  with the upcoming function-list panel.
 - FG-047 Native profiles group by shared object — `src/parse-perf.js` now keeps the DSO/binary
   it parses from each `perf script` frame (it used to discard it) and stores it as the func's
   file, so `packageOf` colors and groups native C frames by binary (the main executable vs
