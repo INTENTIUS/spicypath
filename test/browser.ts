@@ -673,6 +673,67 @@ try {
   await sleep(80);
   const mCrop = await evalIn(`(()=>{const f=window.__fv;try{f.draw();return {ok:true,metricsH:f.metricsH,winSet:!!f.win};}catch(e){return {ok:false,err:e.message};}})()`);
   check('FG-025: draw() with metric lanes + time-window crop succeeds', mCrop.ok && mCrop.metricsH > 0 && mCrop.winSet, JSON.stringify(mCrop));
+  // --- FG-025 pass 2: bidirectional hover ---
+  // Restore chart mode with metrics (the crop test above left chart mode active with a win set).
+  await evalIn(`window.__fv.win = null; window.__fv.relayout();`);
+  await sleep(50);
+
+  // (1) Lane hover → hoverTime is set; _lit() returns true for a box in that time and false for one outside.
+  const laneHoverState = await evalIn(`(()=>{
+    const f = window.__fv;
+    if (!f.p.metrics || !f.p.metrics.length) return {skip:true};
+    // Simulate a pointermove into the first metric lane's center.
+    // The lane occupies y=[MINIMAP_H, MINIMAP_H+METRIC_LANE_H), i.e. [52, 104).
+    // We call _onMove directly with a synthetic event at the horizontal midpoint.
+    const cv = document.getElementById('cv');
+    const r = cv.getBoundingClientRect();
+    const px = r.left + f.cssW / 2;
+    const py = r.top + 52 + 26; // mid-y of lane 0 (52 + METRIC_LANE_H/2)
+    f._onMove({clientX: px, clientY: py});
+    const ht = f.hoverTime;
+    const hv = f.hoverV;
+    const hoverNull = f.hover;
+    // build a synthetic box that contains hoverTime and one that doesn't
+    if (ht == null) return {htNull:true};
+    const [ws, we] = f._winBounds();
+    const span = we - ws;
+    const boxIn  = {t0: ht - span*0.01, t1: ht + span*0.01, func:0};
+    const boxOut = {t0: we + span, t1: we + span*2, func:0};
+    const litIn  = f._lit(boxIn);
+    const litOut = f._lit(boxOut);
+    return {ht, hv, hoverNull, litIn, litOut, ws, we};
+  })()`);
+  check('FG-025 pass2: lane hover sets hoverTime (not null)', laneHoverState.ht != null && !laneHoverState.htNull, JSON.stringify(laneHoverState));
+  check('FG-025 pass2: lane hover sets hoverV = hoverTime', laneHoverState.ht === laneHoverState.hv, JSON.stringify(laneHoverState));
+  check('FG-025 pass2: lane hover clears flame-box hover', laneHoverState.hoverNull == null, JSON.stringify(laneHoverState));
+  check('FG-025 pass2: _lit() true for box spanning hoverTime', laneHoverState.litIn === true, JSON.stringify(laneHoverState));
+  check('FG-025 pass2: _lit() false for box outside hoverTime', laneHoverState.litOut === false, JSON.stringify(laneHoverState));
+
+  // (2) Frame hover → band state is set (metricBandX != null) and draw() doesn't throw.
+  const frameHoverState = await evalIn(`(()=>{
+    const f = window.__fv;
+    // find a chart box that has t0/t1
+    const box = f.boxes && f.boxes.find(b => b.t0 != null && b.t1 != null && b.t1 > b.t0);
+    if (!box) return {skip:true, boxCount: f.boxes ? f.boxes.length : 0};
+    // simulate leaving the lane and hovering the box
+    f._onMove({clientX: document.getElementById('cv').getBoundingClientRect().left + box.x + box.w/2,
+               clientY: document.getElementById('cv').getBoundingClientRect().top + f.contentTop + box.depth*22 + 11});
+    const ht = f.hoverTime; // must be null (we moved out of the lane)
+    const hov = f.hover;
+    try { f.draw(); } catch(e) { return {drawErr: e.message}; }
+    const band = f._metricBandX;
+    return {ht, hovSet: hov != null, band, t0: box.t0, t1: box.t1};
+  })()`);
+  check('FG-025 pass2: frame hover clears hoverTime', frameHoverState.hoverTime == null && !frameHoverState.drawErr, JSON.stringify(frameHoverState));
+  check('FG-025 pass2: frame hover sets this.hover (box hover still works)', frameHoverState.hovSet === true, JSON.stringify(frameHoverState));
+  check('FG-025 pass2: frame hover → band drawn on lanes (metricBandX set)', frameHoverState.band != null && Array.isArray(frameHoverState.band), JSON.stringify(frameHoverState));
+  check('FG-025 pass2: draw() with frame hover does not throw', !frameHoverState.drawErr, JSON.stringify(frameHoverState));
+
+  // (3) Leaving the canvas clears both hover states.
+  await evalIn(`(()=>{ const f=window.__fv; f._on.leave(); })()`);
+  const afterLeave = await evalIn(`(()=>{const f=window.__fv;return {hover:f.hover,hoverTime:f.hoverTime,hoverV:f.hoverV};})()`);
+  check('FG-025 pass2: mouseleave clears hoverTime + hover + hoverV', afterLeave.hover == null && afterLeave.hoverTime == null && afterLeave.hoverV == null, JSON.stringify(afterLeave));
+
   // Clean up: remove metrics and reset.
   await evalIn(`window.__app.setMetrics([]); window.__app.resetView();`);
 

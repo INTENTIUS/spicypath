@@ -52,6 +52,7 @@ export class BaseView {
     this.matchedFuncs = null;
     this.hover = null;
     this.hoverV = null;       // hovered domain value (time/fraction) → synced minimap↔content crosshair
+    this.hoverTime = null;    // time value when hovering a metric lane (FG-025 pass 2); null otherwise
     this.contentTop = 0;      // y-offset of the main content (MINIMAP_H + AXIS_H when chrome shows)
     this.miniDrag = null;
     this.diffMax = 0;
@@ -94,13 +95,13 @@ export class BaseView {
 
   // Sandwich always opens on the default hub (predictable re-entry); an explicit "sandwich
   // this fn" (FG-035) will set focalFunc directly instead of going through here.
-  setMode(m) { this.mode = m; this.focus = null; this.win = null; this.scrollY = 0; this.hover = null; this.hoverV = null; if (m === 'sandwich') { this.focalFunc = this._defaultFocal(); this._buildSandwich(); } this.relayout(); this._updateLegend(); }
+  setMode(m) { this.mode = m; this.focus = null; this.win = null; this.scrollY = 0; this.hover = null; this.hoverV = null; this.hoverTime = null; if (m === 'sandwich') { this.focalFunc = this._defaultFocal(); this._buildSandwich(); } this.relayout(); this._updateLegend(); }
   setCollapse(b) { this.collapse = b; this.relayout(); }
-  resetZoom() { this.focus = null; this.win = null; this.scrollY = 0; if (this.mode === 'sandwich') { this.focalFunc = this._defaultFocal(); this._buildSandwich(); } this.relayout(); }
+  resetZoom() { this.focus = null; this.win = null; this.scrollY = 0; this.hoverTime = null; if (this.mode === 'sandwich') { this.focalFunc = this._defaultFocal(); this._buildSandwich(); } this.relayout(); }
   // Enter diff. Clears search too: matchedFuncs are func indices in the ORIGINAL profile, but
   // diff swaps this.p/this.ct to the synthetic diff profile (different indexing) — a stale
   // search would highlight the wrong frames.
-  showDiff(d) { this.mode = 'diff'; this.ct = d.ct; this.p = d.profile; this.diffMax = d.maxAbsDelta; this.focus = null; this.win = null; this.scrollY = 0; this.hover = null; this.selectedFunc = null; this.query = ''; this.matchedFuncs = null; this.relayout(); this._updateLegend(); }
+  showDiff(d) { this.mode = 'diff'; this.ct = d.ct; this.p = d.profile; this.diffMax = d.maxAbsDelta; this.focus = null; this.win = null; this.scrollY = 0; this.hover = null; this.hoverTime = null; this.selectedFunc = null; this.query = ''; this.matchedFuncs = null; this.relayout(); this._updateLegend(); }
   _defaultFocal() {
     // A good sandwich subject is a *hub* — it has BOTH callers and callees. Picking the
     // heaviest-self frame often lands on a deep leaf, whose sandwich degenerates into a plain
@@ -155,9 +156,11 @@ export class BaseView {
   _isDesc(node, of) { let n = node; while (n >= 0) { if (n === of) return true; n = this.ct.prefix[n]; } return false; }
   _chainNames(head, tail) { const out = []; let n = tail; while (n >= 0) { out.push(funcName(this.p, this.ct.func[n])); if (n === head) break; n = this.ct.prefix[n]; } return out.reverse(); }
 
-  // is a box "lit" (full opacity)? search match, hover call-path, or no filter active
+  // is a box "lit" (full opacity)? search match, hover call-path, lane-hover time span, or no filter active
   _lit(b) {
     if (this.matchedFuncs) return this.matchedFuncs.has(b.func);
+    // lane hover (FG-025 pass 2): box is lit iff its time span contains the hovered time
+    if (this.hoverTime != null) return b.t0 <= this.hoverTime && this.hoverTime < b.t1;
     if (!this.hover) return true;
     if (this.mode === 'graph' || this.mode === 'diff') return this._ancestors(this.hover.node).has(b.node) || this._isDesc(b.node, this.hover.node);
     return b.func === this.hover.func;
@@ -327,7 +330,7 @@ export class FlameView extends BaseView {
     // must be disposed (see dispose()) or they accumulate and fight over state.
     this._on = {
       move: (e) => this._onMove(e),
-      leave: () => { this.hover = null; this.hoverV = null; this._tooltip(null); this._schedule(); },
+      leave: () => { this.hover = null; this.hoverV = null; this.hoverTime = null; this._tooltip(null); this._schedule(); },
       down: (e) => this._onDown(e),
       click: (e) => this._onClick(e),
       dbl: (e) => this._onDblClick(e),
@@ -523,17 +526,27 @@ export class FlameView extends BaseView {
   _onMove(e) {
     const r = this.canvas.getBoundingClientRect(); const px = e.clientX - r.left, py = e.clientY - r.top;
     if (this.maxScrollY > 0 && px >= this.cssW - SCROLLBAR_W && py >= this.contentTop) {
-      this.canvas.style.cursor = 'default'; this.hover = null; this.hoverV = null; this._tooltip(null); this._schedule(); return;
+      this.canvas.style.cursor = 'default'; this.hover = null; this.hoverV = null; this.hoverTime = null; this._tooltip(null); this._schedule(); return;
     }
     if (this._hasMinimap() && py < MINIMAP_H) {
-      this.hover = null; this._tooltip(null);
+      this.hover = null; this.hoverTime = null; this._tooltip(null);
       this.hoverV = this._miniT(px); // crosshair from the overview → main view
       const [ws, we] = this._winBounds(), [vy0, vy1] = this._miniVY();
       const insideCrop = (!!this.win || this.maxScrollY > 0) && px >= this._miniX(ws) && px <= this._miniX(we) && py >= vy0 && py <= vy1;
       this.canvas.style.cursor = insideCrop ? 'grab' : 'col-resize';
       this._schedule(); return;
     }
+    // FG-025 pass 2: metric lane hover — the band between minimap and axis (chart mode only)
+    if (this.mode === 'chart' && this.metricsH > 0 && py >= MINIMAP_H && py < MINIMAP_H + this.metricsH) {
+      this.hover = null; this._tooltip(null);
+      const [ws, we] = this._winBounds();
+      this.hoverTime = ws + (px / this.cssW) * (we - ws); // time at cursor → lights frames
+      this.hoverV = this.hoverTime;                        // drives the crosshair on both minimap + content
+      this.canvas.style.cursor = 'crosshair';
+      this._schedule(); return;
+    }
     this.canvas.style.cursor = 'default';
+    this.hoverTime = null; // leaving a lane clears the lane hover
     this.hover = this._hit(px, py);
     if (this._hasMinimap()) { const [ws, we] = this._winBounds(); this.hoverV = ws + (px / this.cssW) * (we - ws); } // → overview crosshair
     this._schedule(); this._tooltip(this.hover, e);
@@ -629,7 +642,8 @@ export class FlameView extends BaseView {
   // Metric track lanes (FG-025 pass 1) — chart mode only, rendered between the axis and the
   // flame content. Each lane shows a filled area plot of value vs time, cropped to the current
   // window ([ws, we]) using the same domStart/domEnd → x mapping as the minimap and axis.
-  // Lanes are static (no hover/brush yet — those are pass 2).
+  // Pass 2 adds bidirectional hover: frame→track band (this.hover.t0/t1) and lane→frame
+  // highlight (this.hoverTime — lit via _lit()).
   // y of the top of metric lane i (lane 0 abuts the minimap; lane band ends at the axis top,
   // contentTop − AXIS_H). Used by draw + asserted in tests so the lanes never overlap the axis.
   _laneTop(i) { return MINIMAP_H + i * METRIC_LANE_H; }
@@ -642,6 +656,21 @@ export class FlameView extends BaseView {
     const domSpan = (we > ws) ? (we - ws) : 1;
     // lane colors — both entries are hex strings so _rgba() works uniformly below
     const laneColors = [this.T.accent, this.T.accent];
+
+    // FG-025 pass 2: frame→track band — when a flame box is hovered, compute its pixel span
+    // on the lanes (clamped to the visible window) so the band shows what the metrics were
+    // doing during that frame. bandX0/bandX1 = null when no box is hovered.
+    let bandX0 = null, bandX1 = null;
+    if (this.hover && this.hover.t0 != null && this.hover.t1 != null) {
+      const clampedT0 = Math.max(this.hover.t0, ws);
+      const clampedT1 = Math.min(this.hover.t1, we);
+      if (clampedT1 > clampedT0) {
+        bandX0 = (clampedT0 - ws) / domSpan * w;
+        bandX1 = (clampedT1 - ws) / domSpan * w;
+      }
+    }
+    // expose the band state for tests
+    this._metricBandX = (bandX0 != null) ? [bandX0, bandX1] : null;
 
     for (let li = 0; li < metrics.length; li++) {
       const series = metrics[li];
@@ -714,6 +743,13 @@ export class FlameView extends BaseView {
           if (times[i] > we + domSpan * 0.01) break;
         }
         ctx.strokeStyle = lineColor; ctx.lineWidth = 1.5; ctx.stroke();
+      }
+
+      // FG-025 pass 2: frame→track band — translucent vertical highlight for the hovered box's
+      // time span. Drawn inside the clip so it never bleeds outside the lane rect.
+      if (bandX0 != null) {
+        ctx.fillStyle = this._rgba(this.T.accent, 0.28);
+        ctx.fillRect(bandX0, laneY, bandX1 - bandX0, METRIC_LANE_H);
       }
 
       ctx.restore();
