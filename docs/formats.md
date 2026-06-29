@@ -15,6 +15,7 @@ browser (or in Node for the test harness).
 | **speedscope** | `.speedscope.json` | time-ordered | — | both `sampled` and `evented` variants; evented `O`/`C` events are reconstructed into per-interval timed samples |
 | **perf script** | `.perf`, `.txt` | time-ordered | ⚠️ | `perf script` text output; blank-line-separated sample blocks |
 | **OTLP Profiles** | `.otlp` | aggregated | ✅ | OpenTelemetry profiling signal (`profiles/v1development`, protobuf); shares the pprof value-type mapping. Lossless `pprof ↔ OTLP` in our model |
+| **Gecko** | `.gecko.json` | time-ordered | — | Firefox Profiler / `samply` processed-profile JSON (`meta.version` 5); detected by content sniff. Per-sample timing preserved |
 
 "Plane" is whether per-sample timing survives. Aggregated formats carry no timestamps, so
 the time-ordered flame chart is unavailable for them (the chart tab hides itself when
@@ -22,7 +23,6 @@ the time-ordered flame chart is unavailable for them (the chart tab hides itself
 
 ### Planned
 
-- **Gecko** — the Firefox Profiler / `samply` JSON; per-sample, time-ordered.
 - **JFR** — JVM Flight Recorder (binary, JVM-only); deferred.
 
 ## Export formats

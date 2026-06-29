@@ -6,6 +6,7 @@ import { parseCpuProfileText } from './parse-cpuprofile.js';
 import { parsePprofBytes } from './parse-pprof.js';
 import { parseOtlpBytes } from './parse-otlp.js';
 import { parsePerfScriptText } from './parse-perf.js';
+import { parseGeckoText } from './parse-gecko.js';
 
 async function gunzipIfNeeded(bytes) {
   if (bytes.length > 2 && bytes[0] === 0x1f && bytes[1] === 0x8b) {
@@ -33,6 +34,9 @@ export async function ingestBytes(name, bytes) {
   const head = text.slice(0, 4096);
   if (head.trimStart().startsWith('{')) {
     if (head.includes('speedscope') || head.includes('"profiles"')) return parseSpeedscopeText(text);
+    // Gecko: top-level "threads" array + either "meta" or "stackTable" in first thread.
+    // Check before cpuprofile "nodes" — Gecko JSON never has "nodes".
+    if (head.includes('"threads"') && (head.includes('"stackTable"') || head.includes('"meta"'))) return parseGeckoText(text);
     if (head.includes('"nodes"') && head.includes('"timeDeltas"')) return parseCpuProfileText(text);
     if (head.includes('"nodes"')) return parseCpuProfileText(text);
   }

@@ -8,7 +8,8 @@ profile diffing.
 - **No build, no dependencies.** Plain ES modules and a single Canvas 2D renderer; open it
   and it runs. Nothing is uploaded — parsing happens locally.
 - **Reads common formats:** folded/collapsed, pprof, OTLP Profiles, V8 `.cpuprofile`,
-  speedscope (sampled + evented), and `perf script`. See [`docs/formats.md`](./docs/formats.md).
+  speedscope (sampled + evented), `perf script`, and Gecko (Firefox Profiler / `samply`).
+  See [`docs/formats.md`](./docs/formats.md).
 - **Views:** Timeline (flame chart) · Aggregated (flame graph) · Sandwich · Radial,
   plus a diff/comparison mode.
 

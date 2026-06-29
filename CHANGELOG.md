@@ -87,6 +87,11 @@ semantic color · labels-where-fit · path highlight · auto-collapse) landed he
 The differentiating layer — making spicypath not file-only. Remaining M4 work is tracked in
 [GitHub issues](https://github.com/INTENTIUS/spicypath/issues?q=is%3Aopen+milestone%3AM4).
 
+- FG-041 Gecko ingestion — `src/parse-gecko.js` reads the Firefox Profiler / `samply`
+  processed-profile JSON (`meta.version` 5), handling both the raw `{schema, data}` and
+  processed column-array table forms; per-sample timing is preserved (`hasTiming`, ms axis),
+  weight type is `samples`. Detected by content sniff (`threads` + `meta`/`stackTable`),
+  ordered ahead of the `.cpuprofile` check. Golden 48/48, ingest 50/50.
 - FG-027 OTLP Profiles parser + emitter — `src/parse-otlp.js` decodes the OpenTelemetry
   profiling signal (dictionary model, `profiles/v1development`, schema pinned to
   opentelemetry-proto v1.7.0) with a hand-rolled protobuf reader and no deps; reuses the pprof

@@ -11,12 +11,14 @@ import { emitCpuprofile } from './emit/emit-cpuprofile.js';
 import { emitPprof } from './emit/emit-pprof.js';
 import { emitOtlp } from './emit/emit-otlp.js';
 import { emitPerfScript } from './emit/emit-perf.js';
+import { emitGecko } from './emit/emit-gecko.js';
 import { parseFolded } from './parse-folded.ts';
 import { parsePerf } from './parse-perf.ts';
 import { parseSpeedscope } from './parse-speedscope.ts';
 import { parseCpuProfile } from './parse-cpuprofile.ts';
 import { parsePprof } from './parse-pprof.ts';
 import { parseOtlp } from './parse-otlp.ts';
+import { parseGecko } from './parse-gecko.ts';
 import type { Profile } from '../src/model.ts';
 
 mkdirSync('test/testdata', { recursive: true });
@@ -58,6 +60,7 @@ const FORMATS = [
   { ext: 'pprof', emit: emitPprof, parse: parsePprof, binary: true },
   { ext: 'otlp', emit: emitOtlp, parse: parseOtlp, binary: true },
   { ext: 'perf', emit: emitPerfScript, parse: parsePerf, binary: false },
+  { ext: 'gecko.json', emit: emitGecko, parse: parseGecko, binary: false },
 ];
 
 let pass = 0, fail = 0;
