@@ -10,6 +10,11 @@ linkable — the entries record *what* shipped and *why*, not the original commi
 
 ## Enhancements (post-M4)
 
+- FG-046 First-class allocation/heap profiles — allocation profiles (multiple value types incl.
+  a bytes metric) are now a verified, covered path: the weight token cycles `alloc_bytes` ↔
+  `alloc_objects`, byte-valued weights format as KB/MB/GB in the total and the Markdown report
+  (counts stay counts), and a synthesized `alloc-heap` Scene preset round-trips through pprof +
+  OTLP in the golden suite. Bundled as a "heap" sample for discovery.
 - FG-048 Weight unit/label for non-sample profiles — a profile's weight can be relabeled to what
   it actually means, so a wait-time (off-CPU) or byte-valued folded profile reads in µs/ms/s or
   bytes instead of "samples". `parseFoldedText(text, opts)` accepts a value-type hint, and ⌘K →

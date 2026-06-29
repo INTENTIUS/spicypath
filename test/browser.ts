@@ -437,6 +437,22 @@ try {
   }
   check('fuzz: weight cycling holds invariants + changes weight', wtFails === 0 && (mv.wts < 2 || wtChanges > 0), `wts=${mv.wts} changes=${wtChanges} fails=${wtFails}`);
 
+  // --- FG-046: allocation / heap profile — byte formatting + weight cycling ---
+  await evalIn(`window.__app.loadSample('samples/alloc-heap.pprof')`);
+  // poll until the alloc profile is fully loaded and the view reflects it
+  await poll(`window.__fv && window.__fv.p.capabilities.weightTypes.includes('alloc_bytes') ? 1 : 0`);
+  const ah = await evalIn(`(()=>{ const f = window.__fv; return { wts: f.p.capabilities.weightTypes, wt: f.weightType }; })()`);
+  check('FG-046: alloc profile exposes alloc_bytes + alloc_objects weight types', ah.wts.includes('alloc_bytes') && ah.wts.includes('alloc_objects'), JSON.stringify(ah.wts));
+  // alloc_bytes is weightTypes[0] → selected on load; totalLabel must format as KB/MB/GB
+  check('FG-046: alloc_bytes is the initial weight type after load', ah.wt === 'alloc_bytes', `weightType=${ah.wt}`);
+  const ahBytes = await evalIn(`(()=>{ const f = window.__fv; return { wt: f.weightType, lbl: f.totalLabel() }; })()`);
+  check('FG-046: alloc_bytes total formats as KB/MB/GB (not a raw count or "samples")', /[KMGT]B$/.test(ahBytes.lbl), `weightType=${ahBytes.wt} totalLabel="${ahBytes.lbl}"`);
+  // cycle weight token → alloc_objects; view re-aggregates; totalLabel should be a count (no B suffix)
+  await evalIn(`document.getElementById('st-weight').click()`);
+  await poll(`window.__fv.weightType === 'alloc_objects' ? 1 : 0`);
+  const ahCount = await evalIn(`(()=>({ wt: window.__fv.weightType, lbl: window.__fv.totalLabel() }))()`);
+  check('FG-046: alloc_objects weight formats total as a count (not bytes)', !/B$/.test(ahCount.lbl) && /\d/.test(ahCount.lbl), `weightType=${ahCount.wt} totalLabel="${ahCount.lbl}"`);
+
   // --- fuzz C: longer seeded random walk on a timed profile (reproducible) ---
   await evalIn(`window.__app.loadSample('samples/real-vertx.speedscope.json')`);
   await poll(`window.__fv && window.__fv.p.capabilities.hasTiming === true ? 1 : 0`); // back to the timed profile

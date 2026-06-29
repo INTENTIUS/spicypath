@@ -1,0 +1,3 @@
+main;http.serve;json.marshal 1024000
+main;http.serve;db.query 1048576
+main;runtime.gc;gc.alloc 2097152

@@ -73,6 +73,21 @@ function multiValue() {
   };
 }
 
+function allocHeap() {
+  // alloc_bytes (primary) + alloc_objects count; exercises the byte-valued multi-value path
+  // so that byte formatting (KB/MB/GB) and weight cycling are covered end-to-end.
+  return {
+    name: 'alloc-heap', weightTypes: ['alloc_bytes', 'alloc_objects'], hasTiming: false,
+    extraValues: { alloc_objects: () => 1 },
+    samples: [
+      { stack: ['main', 'http.serve', 'json.marshal'],   weight: 512000  },  // 512 KB
+      { stack: ['main', 'http.serve', 'json.marshal'],   weight: 512000  },  // 512 KB (dup path)
+      { stack: ['main', 'http.serve', 'db.query'],       weight: 1048576 },  // 1 MB
+      { stack: ['main', 'runtime.gc', 'gc.alloc'],       weight: 2097152 },  // 2 MB
+    ],
+  };
+}
+
 function unicode() {
   return {
     name: 'unicode', weightTypes: ['cpu_nanos'], hasTiming: false,
@@ -97,4 +112,4 @@ function scale(nSamples) {
   return { name: 'scale-' + nSamples, weightTypes: ['cpu_nanos'], hasTiming: true, samples };
 }
 
-export const PRESETS = [tiny(), deepRecursion(), wideFanout(), multiValue(), unicode(), scale(5000)];
+export const PRESETS = [tiny(), deepRecursion(), wideFanout(), multiValue(), allocHeap(), unicode(), scale(5000)];

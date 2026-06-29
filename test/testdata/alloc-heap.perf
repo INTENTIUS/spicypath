@@ -1,0 +1,20 @@
+app 0 [000] 0.001000: 512000 cpu-clock:
+	0 json.marshal (app.so)
+	0 http.serve (app.so)
+	0 main (app.so)
+
+app 0 [000] 0.002000: 512000 cpu-clock:
+	0 json.marshal (app.so)
+	0 http.serve (app.so)
+	0 main (app.so)
+
+app 0 [000] 0.003000: 1048576 cpu-clock:
+	0 db.query (app.so)
+	0 http.serve (app.so)
+	0 main (app.so)
+
+app 0 [000] 0.004000: 2097152 cpu-clock:
+	0 gc.alloc (app.so)
+	0 runtime.gc (app.so)
+	0 main (app.so)
+
