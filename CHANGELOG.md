@@ -10,6 +10,11 @@ linkable — the entries record *what* shipped and *why*, not the original commi
 
 ## Enhancements (post-M4)
 
+- FG-049 Function list panel — an on-demand sortable table of every function (self · total ·
+  `file:line`), summoned from ⌘K or a status-strip token, with a substring/regex filter, header
+  sort, and a disclosed row cap. Backed by the shared `functionStats`. A row click selects the
+  function (outlines all instances + opens the detail slide-over) via a new `BaseView.selectFunc`;
+  a per-row action sandwiches it — both through the existing public methods, no duplicated logic.
 - FG-045 Markdown hotspot report export — Export → "Markdown report" writes a portable
   `.md`: a metadata header (weight type + unit · total · counts), a ranked **Top functions**
   table (self/total, value + %, `file:line`, units-aware), and a **Hottest stacks** section.

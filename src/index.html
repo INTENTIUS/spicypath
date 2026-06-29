@@ -87,6 +87,30 @@
     /* first-run coachmark */
     #coach { position: fixed; bottom: 38px; left: 50%; transform: translateX(-50%); display: none; background: var(--accent); color: var(--on-accent); padding: 8px 14px; border-radius: 8px; font-size: 12px; box-shadow: 0 8px 24px rgba(0,0,0,0.4); z-index: 8; }
     #coach.on { display: block; }
+    /* FG-049: function list panel */
+    #funclist { position: fixed; top: 36px; left: 50%; transform: translateX(-50%); width: min(820px, 96vw); max-height: 70vh; display: none; flex-direction: column; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 16px 50px rgba(0,0,0,0.55); z-index: 10; overflow: hidden; }
+    #funclist.on { display: flex; }
+    #funclist .fl-head { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--line); background: var(--bg2); flex-shrink: 0; }
+    #funclist .fl-title { color: var(--dim); font-size: 11px; white-space: nowrap; }
+    #funclist .fl-cap { color: var(--faint); font-size: 11px; margin-left: auto; white-space: nowrap; }
+    #funclist #fl-filter { flex: 1; background: var(--bg); color: var(--fg); border: 1px solid var(--line); border-radius: 6px; padding: 3px 8px; font: inherit; font-size: 12px; outline: none; min-width: 0; }
+    #funclist #fl-filter:focus { border-color: var(--accent); }
+    #funclist .fl-body { overflow: auto; flex: 1; }
+    #funclist table { border-collapse: collapse; width: 100%; font: 12px Menlo, Consolas, monospace; }
+    #funclist th { position: sticky; top: 0; background: var(--bg2); color: var(--dim); font-weight: 600; font-size: 11px; padding: 5px 8px; text-align: right; border-bottom: 1px solid var(--line); cursor: pointer; user-select: none; white-space: nowrap; }
+    #funclist th:first-child { text-align: left; }
+    #funclist th:hover { color: var(--fg); }
+    #funclist th.fl-sort-asc::after { content: ' ▲'; }
+    #funclist th.fl-sort-desc::after { content: ' ▼'; }
+    #funclist td { padding: 3px 8px; text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--fg); max-width: 0; }
+    #funclist td:first-child { text-align: left; max-width: 360px; cursor: pointer; }
+    #funclist td:first-child:hover { color: var(--accent); text-decoration: underline; }
+    #funclist tr { border-bottom: 1px solid rgba(255,255,255,0.04); }
+    #funclist tr:hover { background: rgba(255,255,255,0.05); }
+    #funclist tr.fl-selected { background: rgba(137,180,250,0.15); }
+    #funclist .fl-loc { color: var(--faint); font-size: 10px; }
+    #funclist .fl-sw-btn { background: none; border: 1px solid var(--line); color: var(--dim); border-radius: 4px; padding: 1px 6px; font: 10px Menlo, monospace; cursor: pointer; margin-left: 4px; white-space: nowrap; }
+    #funclist .fl-sw-btn:hover { border-color: var(--accent); color: var(--accent); }
     /* floating search pill (⌘F or /) */
     #searchpill { position: fixed; top: 36px; right: 10px; display: none; align-items: center; gap: 8px; padding: 5px 10px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 6px 24px rgba(0,0,0,0.45); z-index: 9; }
     #searchpill.on { display: flex; }
@@ -152,6 +176,16 @@
     <div class="sp-body" id="sp-body"><p class="sp-msg">no source loaded</p></div>
   </div>
 
+  <!-- FG-049: function list panel -->
+  <div id="funclist">
+    <div class="fl-head">
+      <span class="fl-title">Function list</span>
+      <input id="fl-filter" type="search" placeholder="filter by name (substring or regex)" autocomplete="off">
+      <span class="fl-cap" id="fl-cap"></span>
+    </div>
+    <div class="fl-body" id="fl-body"></div>
+  </div>
+
   <div id="statusbar">
     <span id="modes">
       <button id="m-chart" data-mode="chart">Timeline</button>
@@ -163,6 +197,7 @@
     <span class="tok" id="st-diff" title="diff vs baseline — click to exit" style="display:none">diff</span>
     <span id="info"></span>
     <span class="tok" id="st-live" title="live pprof — click to refetch">live</span>
+    <span class="tok" id="st-funclist" title="function list (FG-049)">fn list</span>
     <span class="tok" id="st-collapse" title="toggle auto-collapse (c)">collapse ✓</span>
     <span class="tok" id="st-theme" title="theme picker (t/T to cycle)">—</span>
     <span class="tok" id="st-legend" title="color legend (l)">legend</span>
@@ -275,6 +310,8 @@
     import { parcaAdapter } from './source-parca.js';
     import { aggregateByLine, funcBasename } from './sourceline.js';
     import { colorForFunc } from './colors.js';
+    import { functionStats } from './funcstats.js';
+    import { fmtWeight } from './export.js';
 
     // FG-030: source-file registry — Map<basename, text> loaded by the user.
     // Nothing is uploaded; all reading is local (FileReader). Source files are matched to
@@ -679,7 +716,7 @@
       el.style.opacity = applicable ? '' : '0.4';
       el.style.pointerEvents = applicable ? '' : 'none';
     }
-    function setWeight(wt) { if (!profile || wtSel.value === wt) return; wtSel.value = wt; rebuild(); setMode(mode); updateInfo(); if (!_restoringHash) _scheduleHashWrite(); }
+    function setWeight(wt) { if (!profile || wtSel.value === wt) return; wtSel.value = wt; rebuild(); setMode(mode); updateInfo(); if (!_restoringHash) _scheduleHashWrite(); if (funclistEl.classList.contains('on')) _flRender(); }
     stWeight.onclick = () => { if (!profile) return; const opts = profile.capabilities.weightTypes; if (opts.length < 2) return; setWeight(opts[(opts.indexOf(wtSel.value) + 1) % opts.length]); };
     stDiff.onclick = () => resetView();
     stView.onclick = () => { const k = Object.keys(VIEWS); setViewType(k[(k.indexOf(viewType) + 1) % k.length]); };
@@ -851,7 +888,131 @@
       loadSourceText: (name, text) => { srcFiles.set(name, text); if (view) { const box = view._selBox; if (box) updateSourcePanel(box); } },
       getSrcFiles: () => srcFiles,
       getSourcePanel: () => ({ on: srcPanel.classList.contains('on'), title: srcTitle.textContent, body: srcBody.textContent }),
+      // FG-049: function list panel test hooks
+      openFuncList: () => openFuncList(),
+      isFuncListOpen: () => funclistEl.classList.contains('on'),
     };
+
+    // FG-049: Function list panel
+    const funclistEl = document.getElementById('funclist');
+    const flBody = document.getElementById('fl-body');
+    const flFilter = document.getElementById('fl-filter');
+    const flCap = document.getElementById('fl-cap');
+    const FL_CAP = 500; // max rows rendered; disclose if exceeded
+    let _flData = []; // current sorted+filtered stats
+    let _flAllCount = 0; // total before cap
+    let _flSort = 'self'; // 'self' | 'total' | 'name'
+    let _flSortDir = -1; // -1 = desc, 1 = asc
+
+    function _flSortData(rows) {
+      // _flSortDir: -1 = descending (heaviest first), 1 = ascending
+      // For numeric: -1 * (a - b) = b - a = descending; 1 * (a - b) = a - b = ascending
+      return rows.slice().sort((a, b) => {
+        if (_flSort === 'name') return _flSortDir * a.name.localeCompare(b.name);
+        if (_flSort === 'total') return _flSortDir * (a.total - b.total);
+        return _flSortDir * (a.self - b.self); // default: self desc
+      });
+    }
+
+    function _flFilter(rows) {
+      const q = flFilter.value.trim();
+      if (!q) return rows;
+      let re = null;
+      try { re = new RegExp(q, 'i'); } catch { re = null; }
+      const lower = q.toLowerCase();
+      return rows.filter((r) => re ? re.test(r.name) : r.name.toLowerCase().includes(lower));
+    }
+
+    function _flRender() {
+      if (!profile || !view) { flBody.innerHTML = ''; return; }
+      const gt = view.ct.grandTotal || 1;
+      const pct = (v) => (100 * v / gt).toFixed(1) + '%';
+      const wt = wtSel.value;
+
+      const base = functionStats(view.ct, profile);
+      const filtered = _flFilter(_flSortData(base));
+      _flAllCount = filtered.length;
+      _flData = filtered.slice(0, FL_CAP);
+
+      if (_flAllCount > FL_CAP) {
+        flCap.textContent = `showing ${FL_CAP} of ${_flAllCount}`;
+      } else {
+        flCap.textContent = `${_flAllCount} function${_flAllCount !== 1 ? 's' : ''}`;
+      }
+
+      // Build table
+      const rows = _flData.map((r, i) => {
+        const loc = (r.file && r.line >= 0) ? `${_esc(r.file)}:${r.line}` : (r.file ? _esc(r.file) : '');
+        const selfFmt = fmtWeight(wt, r.self);
+        const selfPct = pct(r.self);
+        const totPct = pct(r.total);
+        return `<tr data-fi="${r.func}">` +
+          `<td title="${_esc(r.name)}">${_esc(r.name)}</td>` +
+          `<td>${selfFmt} <span style="color:var(--dim)">${selfPct}</span></td>` +
+          `<td><span style="color:var(--dim)">${totPct}</span></td>` +
+          `<td>${loc ? `<span class="fl-loc">${loc}</span>` : ''}</td>` +
+          `<td><button class="fl-sw-btn" data-fi="${r.func}" title="sandwich this function">⊕</button></td>` +
+          `</tr>`;
+      }).join('');
+
+      const sortCls = (col) => _flSort === col ? ` class="${_flSortDir < 0 ? 'fl-sort-desc' : 'fl-sort-asc'}"` : '';
+      flBody.innerHTML =
+        `<table><thead><tr>` +
+        `<th${sortCls('name')} data-sort="name">function</th>` +
+        `<th${sortCls('self')} data-sort="self">self</th>` +
+        `<th${sortCls('total')} data-sort="total">total</th>` +
+        `<th>file:line</th>` +
+        `<th></th>` +
+        `</tr></thead><tbody>${rows}</tbody></table>`;
+
+      // Highlight the currently selected function if present
+      if (view && view.selectedFunc != null) {
+        const sel = flBody.querySelector(`tr[data-fi="${view.selectedFunc}"]`);
+        if (sel) sel.classList.add('fl-selected');
+      }
+
+      // Header sort clicks
+      flBody.querySelectorAll('th[data-sort]').forEach((th) => {
+        th.onclick = () => {
+          const col = th.dataset.sort;
+          if (_flSort === col) { _flSortDir *= -1; }
+          else { _flSort = col; _flSortDir = (col === 'name') ? 1 : -1; }
+          _flRender();
+        };
+      });
+
+      // Row clicks → selectFunc
+      flBody.querySelectorAll('tr[data-fi]').forEach((tr) => {
+        const fi = +tr.dataset.fi;
+        tr.querySelector('td:first-child').onclick = () => {
+          if (view) {
+            view.selectFunc(fi);
+            showDetail(view._selBox);
+            flBody.querySelectorAll('tr.fl-selected').forEach((r) => r.classList.remove('fl-selected'));
+            tr.classList.add('fl-selected');
+          }
+        };
+        // Sandwich button
+        const swBtn = tr.querySelector('.fl-sw-btn');
+        if (swBtn) swBtn.onclick = (e) => { e.stopPropagation(); if (view) { closeFuncList(); sandwichThis(fi); } };
+      });
+    }
+
+    function openFuncList() {
+      if (!profile || !view) return;
+      _flSort = 'self'; _flSortDir = -1;
+      flFilter.value = '';
+      _flRender();
+      funclistEl.classList.add('on');
+      flFilter.focus();
+    }
+    function closeFuncList() { funclistEl.classList.remove('on'); }
+    flFilter.oninput = () => _flRender();
+    // Esc closes the panel
+    flFilter.onkeydown = (e) => { if (e.key === 'Escape') { closeFuncList(); e.stopPropagation(); } };
+    // Click-away dismissal (backdrop)
+    document.addEventListener('mousedown', (e) => { if (funclistEl.classList.contains('on') && !funclistEl.contains(e.target) && e.target !== document.getElementById('st-funclist')) closeFuncList(); });
+    document.getElementById('st-funclist').onclick = () => funclistEl.classList.contains('on') ? closeFuncList() : openFuncList();
 
     // FG-035: right-click frame context menu (calls the view's public action API)
     function sandwichThis(func) {
@@ -916,6 +1077,7 @@
       c.push(['Export: folded', () => doExport('folded')]);
       c.push(['Export: SVG snapshot', () => doExport('svg')]);
       c.push(['Export: Markdown report', () => doExport('markdown')]);
+      if (profile) c.push(['Function list', () => openFuncList()]);
       c.push(['Toggle color legend', () => toggleLegend()]);
       c.push(['Help / keyboard shortcuts', () => toggleHelp()]);
       for (const name of listThemes()) c.push(['Theme: ' + name + (name === getThemeName() ? ' ✓' : ''), () => applyTheme(name)]);
@@ -1022,7 +1184,7 @@
       const inInput = /^(INPUT|SELECT|TEXTAREA)$/.test(document.activeElement?.tagName || '');
       if (e.key === '/' && !inInput) { e.preventDefault(); openSearch(); return; }
       if (e.key === '?' && !inInput) { e.preventDefault(); toggleHelp(); return; }
-      if (e.key === 'Escape') { hideMenu(); closePalette(); closeThemePicker(); closeConnect(); closeUrlDialog(); help.classList.remove('on'); srcPanel.classList.remove('on'); if (pill.classList.contains('on') && !searchEl.value) closeSearch(); if (view && !inInput) { view.resetZoom(); showDetail(false); _scheduleHashWrite(); } return; }
+      if (e.key === 'Escape') { hideMenu(); closePalette(); closeThemePicker(); closeConnect(); closeUrlDialog(); closeFuncList(); help.classList.remove('on'); srcPanel.classList.remove('on'); if (pill.classList.contains('on') && !searchEl.value) closeSearch(); if (view && !inInput) { view.resetZoom(); showDetail(false); _scheduleHashWrite(); } return; }
       if (inInput || !view || !profile) return;
       const caps = (VIEWS[viewType].capabilities || { modes: ['graph', 'chart', 'sandwich'] }).modes;
       if (e.key === '1' && caps.includes('chart')) setMode('chart');

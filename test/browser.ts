@@ -932,6 +932,124 @@ try {
   // Clean up: remove metrics and reset.
   await evalIn(`window.__app.setMetrics([]); window.__app.resetView();`);
 
+  // --- FG-049: function list panel ---
+  // Load a deterministic sample with known functions.
+  await evalIn(`window.__app.loadSample('samples/node.cpuprofile')`);
+  await poll(`window.__fv && /node\\.cpuprofile/.test(document.getElementById('info').innerText||'') ? 1 : 0`);
+  await evalIn(`window.__app.setViewType('flame'); window.__app.resetView();`);
+  await poll(`window.__fv && window.__fv.mode==='graph' ? 1 : 0`);
+
+  // (1) Panel is hidden by default.
+  const flHidden = await evalIn(`document.getElementById('funclist').classList.contains('on')`);
+  check('FG-049: funclist panel is hidden by default', flHidden === false, `on=${flHidden}`);
+
+  // (2) openFuncList() makes it visible, has rows, and shows cap disclosure when applicable.
+  await evalIn(`window.__app.openFuncList()`);
+  await sleep(50);
+  const flOpen = await evalIn(`(()=>{
+    const el = document.getElementById('funclist');
+    const rows = el.querySelectorAll('tbody tr');
+    const cap = document.getElementById('fl-cap').textContent || '';
+    return { on: el.classList.contains('on'), rows: rows.length, cap };
+  })()`);
+  check('FG-049: openFuncList() opens the panel', flOpen.on === true, `on=${flOpen.on}`);
+  check('FG-049: panel has at least one row', flOpen.rows >= 1, `rows=${flOpen.rows}`);
+  check('FG-049: cap label is present', flOpen.cap.length > 0, `cap="${flOpen.cap}"`);
+
+  // (3) First row matches functionStats rank-1 (heaviest self).
+  const flFirstRow = await evalIn(`(()=>{
+    const { functionStats } = window.__funcstats || {};
+    // Verify rank-1 via the panel header's data-fi matches the heaviest self in the ct
+    const v = window.__fv;
+    if (!v) return { err: 'no view' };
+    const first = document.querySelector('#funclist tbody tr');
+    if (!first) return { err: 'no row' };
+    const fi = +first.dataset.fi;
+    // compute self for each func manually from ct
+    const ct = v.ct; const n = ct.func.length;
+    const selfMap = new Map();
+    for (let i = 0; i < n; i++) { selfMap.set(ct.func[i], (selfMap.get(ct.func[i])||0) + ct.self[i]); }
+    let maxF = -1, maxS = -1;
+    for (const [f, s] of selfMap) { if (s > maxS) { maxS = s; maxF = f; } }
+    return { fi, maxF, match: fi === maxF };
+  })()`);
+  check('FG-049: first row is the heaviest-self function', flFirstRow.match, JSON.stringify(flFirstRow));
+
+  // (4) Filter input narrows the row count.
+  const flBeforeFilter = await evalIn(`document.querySelectorAll('#funclist tbody tr').length`);
+  await evalIn(`(()=>{const f=document.getElementById('fl-filter');f.value='jsonWork';f.dispatchEvent(new Event('input'));})()`);
+  await sleep(30);
+  const flAfterFilter = await evalIn(`document.querySelectorAll('#funclist tbody tr').length`);
+  check('FG-049: filter input narrows row count', flAfterFilter < flBeforeFilter && flAfterFilter >= 1, `${flBeforeFilter} → ${flAfterFilter}`);
+
+  // (5) Clearing filter restores full row count.
+  await evalIn(`(()=>{const f=document.getElementById('fl-filter');f.value='';f.dispatchEvent(new Event('input'));})()`);
+  await sleep(30);
+  const flRestored = await evalIn(`document.querySelectorAll('#funclist tbody tr').length`);
+  check('FG-049: clearing filter restores row count', flRestored === flBeforeFilter, `${flAfterFilter} → ${flRestored} (expected ${flBeforeFilter})`);
+
+  // (6) Sort by name header changes order.
+  const flSelfFirst = await evalIn(`+document.querySelector('#funclist tbody tr').dataset.fi`);
+  await evalIn(`document.querySelector('#funclist th[data-sort="name"]').click()`);
+  await sleep(30);
+  const flNameFirst = await evalIn(`+document.querySelector('#funclist tbody tr').dataset.fi`);
+  // sort by self desc again and compare
+  await evalIn(`document.querySelector('#funclist th[data-sort="self"]').click()`);
+  await sleep(30);
+  const flSelfFirst2 = await evalIn(`+document.querySelector('#funclist tbody tr').dataset.fi`);
+  check('FG-049: sort by name changes row order vs self', flSelfFirst !== flNameFirst || flRestored <= 1, `self-first fi=${flSelfFirst} name-first fi=${flNameFirst}`);
+  check('FG-049: sort by self (re-click) restores self-desc order', flSelfFirst2 === flSelfFirst, `self-first=${flSelfFirst} re-sort=${flSelfFirst2}`);
+
+  // (7) Click a row → selectFunc sets selectedFunc on the view and detail opens.
+  const flFirstFi = await evalIn(`+document.querySelector('#funclist tbody tr').dataset.fi`);
+  await evalIn(`document.querySelector('#funclist tbody tr td:first-child').click()`);
+  await sleep(60);
+  const flSel = await evalIn(`(()=>{
+    const v = window.__fv;
+    const detail = document.getElementById('detail');
+    return { selFunc: v.selectedFunc, detailOn: detail.classList.contains('on') };
+  })()`);
+  check('FG-049: row click sets view.selectedFunc', flSel.selFunc === flFirstFi, `selectedFunc=${flSel.selFunc} expected=${flFirstFi}`);
+  check('FG-049: row click opens the detail slide-over', flSel.detailOn, `detailOn=${flSel.detailOn}`);
+
+  // (8) Sandwich button (⊕) triggers sandwich mode through the public API.
+  // Re-open the panel (clicking a row selects but doesn't close the panel).
+  if (!await evalIn(`window.__app.isFuncListOpen()`)) await evalIn(`window.__app.openFuncList()`);
+  await sleep(30);
+  const flSwBtn = await evalIn(`!!document.querySelector('#funclist .fl-sw-btn')`);
+  check('FG-049: sandwich button exists in row', flSwBtn, `fl-sw-btn found=${flSwBtn}`);
+  if (flSwBtn) {
+    const swFi = await evalIn(`+document.querySelector('#funclist .fl-sw-btn').dataset.fi`);
+    await evalIn(`document.querySelector('#funclist .fl-sw-btn').click()`);
+    await poll(`window.__fv && window.__fv.mode==='sandwich' ? 1 : 0`);
+    const flSw = await evalIn(`(()=>({mode:window.__fv.mode, focal:window.__fv.focalFunc}))()`);
+    check('FG-049: sandwich button triggers sandwich mode', flSw.mode === 'sandwich', `mode=${flSw.mode}`);
+    check('FG-049: sandwich button sets the correct focal function', flSw.focal === swFi, `focal=${flSw.focal} expected=${swFi}`);
+    check('FG-049: funclist closes after sandwich action', !await evalIn(`window.__app.isFuncListOpen()`), 'panel closed');
+  }
+
+  // (9) Esc closes the panel.
+  await evalIn(`window.__app.openFuncList()`);
+  await sleep(30);
+  check('FG-049: panel re-opened before Esc test', await evalIn(`window.__app.isFuncListOpen()`), 'panel open');
+  await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 }, sessionId);
+  await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 }, sessionId);
+  await sleep(40);
+  check('FG-049: Esc closes the panel', !await evalIn(`window.__app.isFuncListOpen()`), 'panel closed by Esc');
+
+  // (10) Palette "Function list" command opens the panel.
+  await evalIn(`window.__app.resetView()`);
+  await poll(`window.__fv && window.__fv.mode==='graph' ? 1 : 0`);
+  await evalIn(`(()=>{window.dispatchEvent(new KeyboardEvent('keydown',{key:'k',ctrlKey:true,bubbles:true}));})()`);
+  await sleep(40);
+  await evalIn(`(()=>{const inp=document.getElementById('pal-input');inp.value='Function list';inp.dispatchEvent(new Event('input'));inp.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}));})()`);
+  await sleep(60);
+  check('FG-049: palette "Function list" command opens the panel', await evalIn(`window.__app.isFuncListOpen()`), 'panel opened via palette');
+
+  // Clean up: close the panel.
+  await evalIn(`window.__app.openFuncList && document.getElementById('funclist').classList.remove('on');`);
+  await evalIn(`window.__app.resetView();`);
+
 } catch (e: any) {
   failures++;
   console.log('  ✗ harness error —', e?.message || e);

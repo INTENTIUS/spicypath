@@ -340,6 +340,23 @@ export class BaseView {
       (aiHtml ? `<div class="dcol"><div class="dh">All Instances</div>${aiHtml}</div>` : '') +
       `<div class="dcol dstack"><div class="dh">${this._esc(name)}${file ? ` <span style="color:${this.T.faint}">(${this._esc(file)})</span>` : ''}</div>${stack}</div>`;
   }
+  // Select a function by index: outline all its instances, pick a representative call-node
+  // (the one with the greatest self weight), open the detail slide-over, and fire onSelect.
+  selectFunc(f) {
+    this.selectedFunc = f;
+    // find the representative call-node — highest self weight among nodes for this function
+    const ct = this.ct, n = ct.func.length;
+    let bestNode = -1, bestSelf = -1;
+    for (let i = 0; i < n; i++) {
+      if (ct.func[i] === f && ct.self[i] > bestSelf) { bestSelf = ct.self[i]; bestNode = i; }
+    }
+    this.selectedNode = bestNode >= 0 ? bestNode : null;
+    const box = bestNode >= 0 ? { func: f, node: bestNode, self: ct.self[bestNode], total: ct.total[bestNode] } : { func: f };
+    this._updateDetail(box);
+    if (this._opts.onSelect) this._opts.onSelect(box);
+    this._schedule();
+  }
+
   _tooltip(b, e) {
     const tt = document.getElementById('tt');
     if (!tt) return;
