@@ -232,6 +232,15 @@ chevron) so a collapsed chain doesn't read as a leaf; layout stability so the us
 doesn't lose their place; and a conservative heuristic that only folds near-equal-weight
 single-child chains, never branch points.
 
+### Hide controls, never state
+
+Chrome is summoned on demand; the data is full-bleed. Controls (the command palette, search,
+context menu, legend, help) appear when asked for and get out of the way. But the *state* a
+reading depends on — the current mode, the active weight type, whether a diff is on — stays
+visible at all times in the status strip. A frame's width means different things in Timeline
+versus Aggregated, so hiding the current mode is a correctness bug, not a cosmetic one. View
+modes stay discoverable as a minimal always-visible segmented control, never palette-only.
+
 ### Interaction removes static load
 
 Interactivity's real value is that it lets the resting state be calmer and denser: drop

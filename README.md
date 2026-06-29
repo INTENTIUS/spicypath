@@ -12,6 +12,9 @@ profile diffing.
 - **Views:** Timeline (flame chart) · Aggregated (flame graph) · Sandwich · Radial,
   plus a diff/comparison mode.
 
+It inspects profiles you point it at. It is deliberately not a dashboard, not a Grafana panel
+plugin, and it does not own collection or storage — those are permanent non-goals.
+
 ## Quickstart
 
 Serve the `src/` directory and open it in a browser:
@@ -40,7 +43,10 @@ to open your own; `.gz` is decompressed automatically.
   rendering design principles.
 - [`docs/formats.md`](./docs/formats.md) — supported input/export formats and how to add a
   parser.
-- [`ROADMAP.md`](./ROADMAP.md) — planned work.
+- [`CHANGELOG.md`](./CHANGELOG.md) — what has shipped, by milestone.
+- [GitHub issues](https://github.com/INTENTIUS/spicypath/issues) — planned and open work
+  (the `FG-NNN` ids carry into issue titles).
+- [`CONTRIBUTING.md`](./CONTRIBUTING.md) — conventions and how to add a parser or view.
 
 ## Development
 
