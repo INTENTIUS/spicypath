@@ -1,10 +1,11 @@
 // folded/collapsed stacks (text) → canonical model. Pure (browser + Node).
 import { ProfileBuilder } from './model.js';
 
-export function parseFoldedText(text) {
+export function parseFoldedText(text, opts = {}) {
+  const weightType = opts.weightType || 'samples';
   const b = new ProfileBuilder();
   const stack = [];
-  const samples = [];
+  const weights = [];
   for (const line of text.split('\n')) {
     const t = line.trimEnd();
     if (!t) continue;
@@ -15,7 +16,7 @@ export function parseFoldedText(text) {
     let prefix = -1;
     for (const fn of t.slice(0, sp).split(';')) prefix = b.internStack(b.internFrame(b.internFunc(b.internString(fn), -1, -1), -1, 0), prefix);
     stack.push(prefix);
-    samples.push(count);
+    weights.push(count);
   }
-  return b.finish([{ name: 'folded', samples: { stack, weightsByType: { samples }, time: null } }], { hasTiming: false, weightTypes: ['samples'], isDiff: false });
+  return b.finish([{ name: 'folded', samples: { stack, weightsByType: { [weightType]: weights }, time: null } }], { hasTiming: false, weightTypes: [weightType], isDiff: false });
 }

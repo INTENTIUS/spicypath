@@ -10,6 +10,12 @@ linkable — the entries record *what* shipped and *why*, not the original commi
 
 ## Enhancements (post-M4)
 
+- FG-048 Weight unit/label for non-sample profiles — a profile's weight can be relabeled to what
+  it actually means, so a wait-time (off-CPU) or byte-valued folded profile reads in µs/ms/s or
+  bytes instead of "samples". `parseFoldedText(text, opts)` accepts a value-type hint, and ⌘K →
+  "Weight unit: …" relabels the active weight (renamed across `weightsByType`/`capabilities`/the
+  weight token, numbers untouched) so `_fmtWeight` picks the right formatter everywhere. Guards
+  against relabeling to a name that already exists on a multi-value profile.
 - FG-050 Interactive call stack — the detail slide-over's stack trace is now navigable: each row
   carries its call-node (graph) or function (chart/sandwich) identity, and clicking an ancestor
   selects it (new `BaseView.selectNode`, sibling of `selectFunc`) — outlining its instances and

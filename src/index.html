@@ -718,6 +718,38 @@
     }
     function setWeight(wt) { if (!profile || wtSel.value === wt) return; wtSel.value = wt; rebuild(); setMode(mode); updateInfo(); if (!_restoringHash) _scheduleHashWrite(); if (funclistEl.classList.contains('on')) _flRender(); }
     stWeight.onclick = () => { if (!profile) return; const opts = profile.capabilities.weightTypes; if (opts.length < 2) return; setWeight(opts[(opts.indexOf(wtSel.value) + 1) % opts.length]); };
+
+    // FG-048: relabel the active weight's unit so _fmtWeight renders it correctly.
+    // Maps the chosen unit to a canonical name _fmtWeight already understands, then renames
+    // the value type across weightsByType (in every thread), capabilities.weightTypes, and the
+    // wtSel option+value — without touching the underlying numbers or layout.
+    const WEIGHT_UNIT_NAMES = { samples: 'samples', nanoseconds: 'nanoseconds', microseconds: 'microseconds', milliseconds: 'milliseconds', seconds: 'seconds', bytes: 'bytes' };
+    function relabelWeight(unit) {
+      if (!profile) return;
+      const newName = WEIGHT_UNIT_NAMES[unit] || 'samples';
+      const oldName = wtSel.value;
+      if (newName === oldName) return;
+      // Don't collide with a different existing weight column (would overwrite it on a
+      // multi-value profile). Surface it instead of corrupting the model.
+      if (profile.capabilities.weightTypes.includes(newName)) { info.textContent = `weight "${newName}" already exists`; return; }
+      // Rename the key in every thread's weightsByType
+      for (const thread of profile.threads) {
+        const col = thread.samples.weightsByType[oldName];
+        if (col !== undefined) {
+          thread.samples.weightsByType[newName] = col;
+          delete thread.samples.weightsByType[oldName];
+        }
+      }
+      // Update capabilities.weightTypes
+      const idx = profile.capabilities.weightTypes.indexOf(oldName);
+      if (idx >= 0) profile.capabilities.weightTypes[idx] = newName;
+      // Update the wtSel option + value
+      const opt = Array.from(wtSel.options).find((o) => o.value === oldName);
+      if (opt) { opt.value = newName; opt.textContent = newName; }
+      wtSel.value = newName;
+      rebuild();
+      updateInfo();
+    }
     stDiff.onclick = () => resetView();
     stView.onclick = () => { const k = Object.keys(VIEWS); setViewType(k[(k.indexOf(viewType) + 1) % k.length]); };
     document.getElementById('file').onchange = (e) => e.target.files[0] && openFile(e.target.files[0]);
@@ -891,6 +923,8 @@
       // FG-049: function list panel test hooks
       openFuncList: () => openFuncList(),
       isFuncListOpen: () => funclistEl.classList.contains('on'),
+      // FG-048: relabel the active weight unit (changes only display/formatting, not numbers)
+      setWeightUnit: (unit) => relabelWeight(unit),
     };
 
     // FG-049: Function list panel
@@ -1072,6 +1106,7 @@
       c.push(['View: Flame (rectangular)', () => setViewType('flame')]);
       c.push(['View: Radial (sunburst)', () => setViewType('radial')]);
       if (profile) for (const wt of profile.capabilities.weightTypes) c.push(['Weight: ' + wt, () => setWeight(wt)]);
+      if (profile) for (const u of ['nanoseconds', 'microseconds', 'milliseconds', 'seconds', 'bytes', 'samples']) c.push(['Weight unit: ' + u, () => relabelWeight(u)]);
       c.push([(collapsed ? 'Disable' : 'Enable') + ' collapse', () => toggleCollapse()]);
       c.push(['Export: speedscope JSON', () => doExport('speedscope')]);
       c.push(['Export: folded', () => doExport('folded')]);

@@ -17,7 +17,7 @@ async function gunzipIfNeeded(bytes) {
   return bytes;
 }
 
-export async function ingestBytes(name, bytes) {
+export async function ingestBytes(name, bytes, opts = {}) {
   const lower = (name || '').toLowerCase();
   const data = await gunzipIfNeeded(bytes);
 
@@ -32,7 +32,7 @@ export async function ingestBytes(name, bytes) {
   if (lower.endsWith('.cpuprofile')) return parseCpuProfileText(text);
   if (lower.includes('speedscope')) return parseSpeedscopeText(text);
   if (/\.(perf|perf-script)$/.test(lower)) return parsePerfScriptText(text);
-  if (/\.(folded|collapsed|txt)$/.test(lower)) return parseFoldedText(text);
+  if (/\.(folded|collapsed|txt)$/.test(lower)) return parseFoldedText(text, opts);
 
   // content sniff
   const head = text.slice(0, 4096);
@@ -44,7 +44,7 @@ export async function ingestBytes(name, bytes) {
     if (head.includes('"nodes"') && head.includes('"timeDeltas"')) return parseCpuProfileText(text);
     if (head.includes('"nodes"')) return parseCpuProfileText(text);
   }
-  if (/^[^\s;]+(;[^\s;]+)*\s+\d+\s*$/m.test(head)) return parseFoldedText(text); // "a;b;c 123"
+  if (/^[^\s;]+(;[^\s;]+)*\s+\d+\s*$/m.test(head)) return parseFoldedText(text, opts); // "a;b;c 123"
 
   // last resort: assume pprof protobuf
   return parsePprofBytes(data);

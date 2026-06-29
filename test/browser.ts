@@ -1152,6 +1152,55 @@ try {
   // Clean up after FG-050 tests.
   await evalIn(`window.__app.resetView();`);
 
+  // --- FG-048: weight unit relabeling for folded/off-CPU profiles ---
+  // Use a single-weight folded profile — the actual FG-048 use case (an off-CPU/wait profile
+  // carries one ambiguous 'samples' column). Relabel + round-trip is then collision-free.
+  await evalIn(`window.__app.loadSample('samples/multi-value.pprof')`); // load anything first
+  await poll(`window.__fv ? 1 : 0`);
+  await evalIn(`window.__app.openUrl('/test/testdata/tiny.folded')`);
+  await poll(`window.__fv && /tiny\\.folded/.test(document.getElementById('info').innerText||'') ? 1 : 0`);
+
+  // (1) setWeightUnit is exposed.
+  const fg48Base = await evalIn(`(()=>{return {setWeightUnitExists:typeof window.__app.setWeightUnit==='function'};})()`);
+  check('FG-048: window.__app.setWeightUnit is exposed', fg48Base.setWeightUnitExists, JSON.stringify(fg48Base));
+
+  // (2) Record the current active weight type, then relabel it to 'milliseconds'.
+  const fg48Before = await evalIn(`(()=>{const f=window.__fv;return {wt:f.weightType,wtok:document.getElementById('st-weight').innerText,wts:[...f.p.capabilities.weightTypes]};})()`);
+  await evalIn(`window.__app.setWeightUnit('milliseconds')`);
+  await sleep(50);
+  const fg48After = await evalIn(`(()=>{const f=window.__fv;return {wt:f.weightType,wtok:document.getElementById('st-weight').innerText,wts:[...f.p.capabilities.weightTypes],totalLabel:f.totalLabel()};})()`);
+  check('FG-048: setWeightUnit relabels view.weightType to milliseconds', fg48After.wt === 'milliseconds', `before=${fg48Before.wt} after=${fg48After.wt}`);
+  check('FG-048: weight token updates after relabel', fg48After.wtok === 'milliseconds', `wtok="${fg48After.wtok}"`);
+  check('FG-048: capabilities.weightTypes updated to contain milliseconds', fg48After.wts.includes('milliseconds'), `wts=${JSON.stringify(fg48After.wts)}`);
+  check('FG-048: old weight type name is gone from capabilities', !fg48After.wts.includes(fg48Before.wt) || fg48Before.wt === 'milliseconds', `before="${fg48Before.wt}" wts=${JSON.stringify(fg48After.wts)}`);
+  check('FG-048: totalLabel now formats as time (not "samples")', /(ms|µs|ns|\d+s)/.test(fg48After.totalLabel) && !fg48After.totalLabel.toLowerCase().includes('samples'), `totalLabel="${fg48After.totalLabel}"`);
+
+  // (3) Relabel back to 'samples' to confirm round-trip and invariants hold.
+  await evalIn(`window.__app.setWeightUnit('samples')`);
+  await sleep(50);
+  const fg48RoundTrip = await evalIn(`(()=>{const f=window.__fv;return {wt:f.weightType,wts:[...f.p.capabilities.weightTypes]};})()`);
+  check('FG-048: setWeightUnit round-trips to samples', fg48RoundTrip.wt === 'samples', `wt="${fg48RoundTrip.wt}"`);
+  const fg48Inv = await evalIn(INV);
+  check('FG-048: view invariants hold after relabeling', fg48Inv.ok, JSON.stringify(fg48Inv));
+
+  // (4) Collision guard: on a multi-value profile, relabeling the active weight to a name that
+  // already exists as another column is rejected (would otherwise overwrite that column).
+  await evalIn(`window.__app.loadSample('samples/multi-value.pprof')`);
+  await poll(`window.__fv && window.__fv.p.capabilities.weightTypes.length >= 2 ? 1 : 0`);
+  const fg48Coll = await evalIn(`(()=>{const f=window.__fv;const before=f.weightType;const other=f.p.capabilities.weightTypes.find(w=>w!==before);window.__app.setWeightUnit(other==='samples'?'samples':'samples');return {before,wtsBefore:[...f.p.capabilities.weightTypes]};})()`);
+  await sleep(50);
+  const fg48CollAfter = await evalIn(`(()=>{const f=window.__fv;return {wt:f.weightType,wts:[...f.p.capabilities.weightTypes]};})()`);
+  check('FG-048: relabel to an existing weight name is blocked (no corruption)', fg48CollAfter.wt === fg48Coll.before && JSON.stringify(fg48CollAfter.wts.slice().sort()) === JSON.stringify(fg48Coll.wtsBefore.slice().sort()), `before=${fg48Coll.before} after=${fg48CollAfter.wt} wts=${JSON.stringify(fg48CollAfter.wts)}`);
+
+  // (4) The palette lists "Weight unit:" entries when a profile is loaded.
+  await evalIn(`(()=>{window.dispatchEvent(new KeyboardEvent('keydown',{key:'k',ctrlKey:true,bubbles:true}));})()`);
+  await sleep(40);
+  const palRows = await evalIn(`[...document.querySelectorAll('#pal-list .row')].map(r=>r.textContent).join('|')`);
+  await evalIn(`document.getElementById('palette').classList.remove('on')`);
+  check('FG-048: palette includes "Weight unit: milliseconds" entry', palRows.includes('Weight unit: milliseconds'), `palette has entries: ${palRows.includes('Weight unit')}`);
+
+  await evalIn(`window.__app.resetView();`);
+
 } catch (e: any) {
   failures++;
   console.log('  ✗ harness error —', e?.message || e);
