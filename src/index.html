@@ -639,6 +639,13 @@
       setMode, setViewType, resetView, loadSample, setTheme: applyTheme, listThemes,
       fetchPprofUrl: (url, seconds = 5) => doFetchPprof(url, seconds),
       setSearch: (q) => { searchEl.value = q; if (view) view.setSearch(q); if (!_restoringHash) _scheduleHashWrite(); },
+      // FG-025 pass 1: inject metric series into the active profile and redraw without a reload.
+      // Allows testing track lanes without a parser that emits metrics.
+      setMetrics: (seriesArray) => {
+        if (!profile) return;
+        profile.metrics = seriesArray || [];
+        if (view) { view.relayout(); } // relayout recomputes metricsH + contentTop then schedules draw
+      },
       diffWith: async (path) => {
         const b = new Uint8Array(await (await fetch(path)).arrayBuffer());
         const B = await ingestBytes(path.split('/').pop(), b);

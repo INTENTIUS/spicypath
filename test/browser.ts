@@ -624,6 +624,58 @@ try {
   check('FG-030: loadSourceText registers a source file', srcReg >= 1, `srcFiles=${srcReg}`);
   await evalIn(`window.__app.resetView()`);
 
+  // --- FG-025 pass 1: metric track lanes (static, chart mode only) ---
+  // Load a timed profile so chart mode is available.
+  await evalIn(`window.__app.loadSample('samples/node.cpuprofile')`);
+  await poll(`window.__fv && /node\\.cpuprofile/.test(document.getElementById('info').innerText||'') ? 1 : 0`);
+  // Switch to chart mode.
+  await evalIn(`document.getElementById('m-chart').click()`);
+  await poll(`window.__fv && window.__fv.mode==='chart' ? 1 : 0`);
+  // Baseline: no metrics yet → metricsH must be 0 and contentTop must be 70 (minimap + axis).
+  const mBase = await evalIn(`(()=>{const f=window.__fv;return {metricsH:f.metricsH,contentTop:f.contentTop};})()`);
+  check('FG-025: no metrics → metricsH=0, contentTop=70 (minimap+axis only)', mBase.metricsH === 0 && mBase.contentTop === 52 + 18, `metricsH=${mBase.metricsH} contentTop=${mBase.contentTop}`);
+  // Inject two synthetic metric series via the test hook and wait for the layout update.
+  await evalIn(`(()=>{
+    const chart = window.__fv.chart;
+    const start = chart.start, end = chart.end, n = 32, span = end - start || 1;
+    const time = Array.from({length:n},(_,i)=>start+(i/(n-1))*span);
+    const cpu  = Array.from({length:n},(_,i)=>40+35*Math.sin((i/(n-1))*2*Math.PI));
+    const ram  = Array.from({length:n},(_,i)=>200+(i/(n-1))*600);
+    window.__app.setMetrics([
+      {name:'CPU',unit:'%',time:[...time],value:cpu},
+      {name:'RAM',unit:'MB',time:[...time],value:ram}
+    ]);
+  })()`);
+  await sleep(80); // one rAF
+  const mLanes = await evalIn(`(()=>{const f=window.__fv;return {metricsH:f.metricsH,contentTop:f.contentTop};})()`);
+  check('FG-025: 2 metric series → metricsH=104, contentTop=174', mLanes.metricsH === 104 && mLanes.contentTop === 52 + 18 + 104, `metricsH=${mLanes.metricsH} contentTop=${mLanes.contentTop}`);
+  // Geometry: lane 0 abuts the minimap bottom, and the last lane's bottom abuts the axis top
+  // (contentTop − AXIS_H = 18). Guards against the lanes overlapping the axis ruler.
+  const mGeom = await evalIn(`(()=>{const f=window.__fv;const nm=f.p.metrics.length;return {first:f._laneTop(0),lastBot:f._laneTop(nm),axisTop:f.contentTop-18};})()`);
+  check('FG-025: lanes span minimap→axis with no overlap/gap', mGeom.first === 52 && mGeom.lastBot === mGeom.axisTop, JSON.stringify(mGeom));
+  // Lanes must not cause any draw exception (INV already validates draw(); call it once more).
+  const mDraw = await evalIn(`(()=>{try{window.__fv.draw();return {ok:true};}catch(e){return {ok:false,err:e.message};}})()`);
+  check('FG-025: draw() with metric lanes throws no exception', mDraw.ok, JSON.stringify(mDraw));
+  // Switching to graph mode removes the lanes (metricsH back to 0).
+  await evalIn(`document.getElementById('m-graph').click()`);
+  await poll(`window.__fv && window.__fv.mode==='graph' ? 1 : 0`);
+  const mGraph = await evalIn(`(()=>{const f=window.__fv;return {metricsH:f.metricsH,contentTop:f.contentTop,mode:f.mode};})()`);
+  check('FG-025: switching to graph mode removes metric lanes (metricsH=0)', mGraph.metricsH === 0 && mGraph.mode === 'graph', `metricsH=${mGraph.metricsH} mode=${mGraph.mode}`);
+  // Switching to sandwich mode also has no lanes.
+  await evalIn(`document.getElementById('m-sandwich').click()`);
+  await poll(`window.__fv && window.__fv.mode==='sandwich' ? 1 : 0`);
+  const mSand = await evalIn(`(()=>{const f=window.__fv;return {metricsH:f.metricsH,mode:f.mode};})()`);
+  check('FG-025: sandwich mode has no metric lanes (metricsH=0)', mSand.metricsH === 0 && mSand.mode === 'sandwich', `metricsH=${mSand.metricsH} mode=${mSand.mode}`);
+  // Return to chart to verify time-window cropping: after a minimap crop the lanes still draw.
+  await evalIn(`document.getElementById('m-chart').click()`);
+  await poll(`window.__fv && window.__fv.mode==='chart' ? 1 : 0`);
+  await evalIn(`window.__fv.win = [window.__fv.domStart + (window.__fv.domEnd-window.__fv.domStart)*0.2, window.__fv.domStart + (window.__fv.domEnd-window.__fv.domStart)*0.6]; window.__fv.relayout();`);
+  await sleep(80);
+  const mCrop = await evalIn(`(()=>{const f=window.__fv;try{f.draw();return {ok:true,metricsH:f.metricsH,winSet:!!f.win};}catch(e){return {ok:false,err:e.message};}})()`);
+  check('FG-025: draw() with metric lanes + time-window crop succeeds', mCrop.ok && mCrop.metricsH > 0 && mCrop.winSet, JSON.stringify(mCrop));
+  // Clean up: remove metrics and reset.
+  await evalIn(`window.__app.setMetrics([]); window.__app.resetView();`);
+
 } catch (e: any) {
   failures++;
   console.log('  ✗ harness error —', e?.message || e);

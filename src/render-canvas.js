@@ -18,6 +18,8 @@ const BAND = 22;
 const MINIMAP_H = 52;
 const SCROLLBAR_W = 12; // right-edge hit zone for the vertical scrollbar thumb
 const AXIS_H = 18;      // x-axis ruler height (time for chart, %-of-total for graph)
+const METRIC_LANE_H = 52; // height of each metric track lane (chart mode only, FG-025 pass 1)
+const METRIC_LABEL_W = 54; // px reserved on the left for the series name+unit label
 const TIME_TO_SEC = { nanoseconds: 1e-9, microseconds: 1e-6, milliseconds: 1e-3, seconds: 1 };
 const maxDepthOf = (bs) => { let m = 0; for (const b of bs) if (b.depth > m) m = b.depth; return m; };
 
@@ -377,6 +379,7 @@ export class FlameView extends BaseView {
     this.cssW = w;
     this.contentTop = 0;
     this.maxScrollY = 0;
+    this.metricsH = 0; // reset; only chart mode with metrics sets this > 0 (FG-025 pass 1)
     if (this.mode === 'sandwich' && this.sandwich) {
       this.callerBoxes = layout(this.sandwich.callers, { width: w, minWidth: 0.5 });
       this.calleeBoxes = layout(this.sandwich.callees, { width: w, minWidth: 0.5 });
@@ -386,13 +389,15 @@ export class FlameView extends BaseView {
       this.focalTotal = this.sandwich.callees.grandTotal || 1;
       this._sizeContent(this.calleeTop + (this.calleeMaxDepth + 1) * ROW, 0);
     } else if (this.mode === 'chart' && this.chart) {
-      this.contentTop = MINIMAP_H + AXIS_H;
+      const metrics = (this.p.metrics && this.p.metrics.length) ? this.p.metrics : [];
+      this.metricsH = metrics.length * METRIC_LANE_H; // 0 when no metrics (FG-025 pass 1)
+      this.contentTop = MINIMAP_H + AXIS_H + this.metricsH;
       this.domStart = this.chart.start; this.domEnd = this.chart.end;
       const [ws, we] = this._winBounds();
       this.boxes = chartLayout(this.chart, this.p, { width: w, minWidth: 0.5, winStart: ws, winEnd: we });
       this.miniBoxes = chartLayout(this.chart, this.p, { width: w, minWidth: 0.5, winStart: this.chart.start, winEnd: this.chart.end });
       this.miniMaxDepth = maxDepthOf(this.miniBoxes);
-      this._sizeContent((maxDepthOf(this.boxes) + 1) * ROW, MINIMAP_H + AXIS_H);
+      this._sizeContent((maxDepthOf(this.boxes) + 1) * ROW, MINIMAP_H + AXIS_H + this.metricsH);
     } else if (this.mode === 'diff') { // same machinery as graph, delta-colored
       this.contentTop = MINIMAP_H + AXIS_H;
       this.domStart = 0; this.domEnd = 1;
@@ -621,6 +626,111 @@ export class FlameView extends BaseView {
     }
   }
 
+  // Metric track lanes (FG-025 pass 1) — chart mode only, rendered between the axis and the
+  // flame content. Each lane shows a filled area plot of value vs time, cropped to the current
+  // window ([ws, we]) using the same domStart/domEnd → x mapping as the minimap and axis.
+  // Lanes are static (no hover/brush yet — those are pass 2).
+  // y of the top of metric lane i (lane 0 abuts the minimap; lane band ends at the axis top,
+  // contentTop − AXIS_H). Used by draw + asserted in tests so the lanes never overlap the axis.
+  _laneTop(i) { return MINIMAP_H + i * METRIC_LANE_H; }
+  _drawMetricLanes() {
+    if (!this.metricsH) return;
+    const metrics = this.p.metrics;
+    if (!metrics || !metrics.length) return;
+    const ctx = this.ctx, w = this.cssW;
+    const [ws, we] = this._winBounds();
+    const domSpan = (we > ws) ? (we - ws) : 1;
+    // lane colors — both entries are hex strings so _rgba() works uniformly below
+    const laneColors = [this.T.accent, this.T.accent];
+
+    for (let li = 0; li < metrics.length; li++) {
+      const series = metrics[li];
+      // lanes sit directly under the minimap; the time axis stays just above the flame
+      // content (contentTop − AXIS_H), i.e. BELOW the lanes — so nothing overlaps.
+      const laneY = this._laneTop(li);
+
+      // lane background
+      ctx.fillStyle = (li % 2 === 0) ? this.T.bg2 : this.T.bg;
+      ctx.fillRect(0, laneY, w, METRIC_LANE_H);
+
+      // separator line at the top of the lane
+      ctx.strokeStyle = this.T.line; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(0, laneY + 0.5); ctx.lineTo(w, laneY + 0.5); ctx.stroke();
+
+      // find the value range among visible samples (those whose time falls in [ws, we])
+      const times = series.time, values = series.value, n = times.length;
+      if (!n) continue;
+      let vMin = Infinity, vMax = -Infinity;
+      for (let i = 0; i < n; i++) {
+        if (times[i] >= ws && times[i] <= we) {
+          if (values[i] < vMin) vMin = values[i];
+          if (values[i] > vMax) vMax = values[i];
+        }
+      }
+      // fall back to full range if nothing is visible (shouldn't happen normally)
+      if (!isFinite(vMin)) {
+        for (let i = 0; i < n; i++) { if (values[i] < vMin) vMin = values[i]; if (values[i] > vMax) vMax = values[i]; }
+      }
+      const vSpan = (vMax > vMin) ? (vMax - vMin) : 1;
+      // padding so the filled area doesn't touch the very top/bottom of the lane
+      const plotPad = 4, plotH = METRIC_LANE_H - plotPad * 2 - 1 /* bottom border */;
+      const toY = (v) => laneY + plotPad + (1 - (v - vMin) / vSpan) * plotH;
+      const toX = (t) => (t - ws) / domSpan * w;
+
+      // clip drawing to the lane rect so no overdraw leaks outside
+      ctx.save();
+      ctx.beginPath(); ctx.rect(0, laneY, w, METRIC_LANE_H); ctx.clip();
+
+      // build path: walk samples in order; include one sample on each side of the window for
+      // smooth clipping at the window boundary.
+      const lineColor = laneColors[li % laneColors.length];
+      ctx.beginPath();
+      let started = false;
+      // find first sample at or before ws (for smooth left edge)
+      let iStart = 0;
+      for (let i = 1; i < n; i++) { if (times[i] <= ws) iStart = i; else break; }
+      for (let i = iStart; i < n; i++) {
+        if (times[i] > we + domSpan * 0.01) { // one small step past the right edge
+          const x = toX(times[i]), y = toY(values[i]);
+          if (!started) { ctx.moveTo(x, y); started = true; } else ctx.lineTo(x, y);
+          break;
+        }
+        const x = toX(times[i]), y = toY(values[i]);
+        if (!started) { ctx.moveTo(x, y); started = true; } else ctx.lineTo(x, y);
+      }
+      if (started) {
+        // close the filled area down to the lane bottom; track the index of the last plotted point
+        let iEnd = n - 1;
+        for (let i = iStart; i < n - 1; i++) { if (times[i + 1] > we + domSpan * 0.01) { iEnd = i + 1; break; } }
+        ctx.lineTo(toX(times[iEnd]), laneY + METRIC_LANE_H - 1);
+        ctx.lineTo(toX(times[iStart]), laneY + METRIC_LANE_H - 1);
+        ctx.closePath();
+        ctx.fillStyle = this._rgba(lineColor, 0.22);
+        ctx.fill();
+        // re-draw the line on top
+        ctx.beginPath(); ctx.moveTo(toX(times[iStart]), toY(values[iStart]));
+        for (let i = iStart + 1; i < n; i++) {
+          ctx.lineTo(toX(times[i]), toY(values[i]));
+          if (times[i] > we + domSpan * 0.01) break;
+        }
+        ctx.strokeStyle = lineColor; ctx.lineWidth = 1.5; ctx.stroke();
+      }
+
+      ctx.restore();
+
+      // label: "name (unit)" left-aligned in the lane
+      ctx.fillStyle = this.T.dim;
+      ctx.font = '10px Menlo, Consolas, monospace'; ctx.textBaseline = 'middle';
+      const label = series.unit ? `${series.name} (${series.unit})` : series.name;
+      ctx.fillText(label, 4, laneY + METRIC_LANE_H / 2);
+    }
+
+    // bottom border of the last lane (the time axis is drawn just below this, above content)
+    const lastLaneBot = this._laneTop(metrics.length);
+    ctx.strokeStyle = this.T.line; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(0, lastLaneBot - 0.5); ctx.lineTo(w, lastLaneBot - 0.5); ctx.stroke();
+  }
+
   // Synced crosshair: a vertical line on the minimap at the hovered domain value, plus the
   // matching line on the main content when that value is inside the current window.
   _drawCrosshair() {
@@ -632,7 +742,9 @@ export class FlameView extends BaseView {
     const [ws, we] = this._winBounds();
     if (this.hoverV >= ws && this.hoverV <= we && we > ws) {
       const cx = Math.round((this.hoverV - ws) / (we - ws) * this.cssW) + 0.5;
-      ctx.beginPath(); ctx.moveTo(cx, this.contentTop); ctx.lineTo(cx, this.contentTop + this.viewH); ctx.stroke();
+      // draw from the top of the metric lanes (or contentTop when no lanes) down through the flames
+      const crossTop = this.metricsH > 0 ? MINIMAP_H : this.contentTop;
+      ctx.beginPath(); ctx.moveTo(cx, crossTop); ctx.lineTo(cx, this.contentTop + this.viewH); ctx.stroke();
     }
   }
 
@@ -657,6 +769,7 @@ export class FlameView extends BaseView {
       ctx.translate(0, -this.scrollY);
       this._paintList(this.boxes, this.contentTop, false, 0);
       ctx.restore();
+      this._drawMetricLanes();
       this._drawCrosshair();
       this._drawAxis();
     } else { // no minimap fallback
