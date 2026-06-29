@@ -4,6 +4,21 @@
 // chunk, integers are LEB128 (little-endian base-128 varints, up to 9 bytes). typeId=0:
 // metadata event (string table + element tree defining the type schema); typeId=1:
 // checkpoint/constant-pool event; other typeIds: data events.
+//
+// FG-052 — additional stack-bearing sample events (event names are JDK-version-dependent;
+// we look them up by name from the metadata schema and skip if absent):
+//
+//   jdk.ObjectAllocationSample       → weight field "weight"         (bytes) → alloc_bytes
+//   jdk.ObjectAllocationInNewTLAB    → weight field "allocationSize" (bytes) → alloc_bytes
+//   jdk.ObjectAllocationOutsideTLAB  → weight field "allocationSize" (bytes) → alloc_bytes
+//   jdk.JavaMonitorEnter             → weight field "duration"  (TICKS→ns)   → monitor_nanos
+//   jdk.JavaMonitorWait              → weight field "duration"  (TICKS→ns)   → monitor_nanos
+//   jdk.ThreadPark                   → weight field "duration"  (TICKS→ns)   → park_nanos
+//
+// All events share the same stackTrace CP-ref field and startTime field; stacks are resolved
+// identically to ExecutionSample. Duration fields use TICKS that are converted to nanoseconds
+// with the chunk's ticksPerSecond. The unified sample stream is sorted by time so time[] is
+// non-decreasing across all weight types.
 import { ProfileBuilder } from './model.js';
 
 // --- Big-endian chunk header ------------------------------------------------
@@ -318,14 +333,51 @@ function makeResolver(pools, classes) {
   return { resolveRaw, resolveString, resolveSymbol, resolveClassName };
 }
 
+// --- Generic event field reader ---------------------------------------------
+//
+// For any stack-bearing sample event: scan its fields and extract
+//   startTime (ticks), stackTrace (CP index), and a named weight field (varint).
+// Returns null if the event is malformed or has no valid stackTrace.
+//
+// weightField: the field name to treat as the weight value.
+// ticksToNanos: multiplier to convert ticks→ns (for duration fields); 1 for raw bytes.
+
+function readSampleEvent(buf, p3, eventEnd, fields, weightField, ticksToNanos) {
+  let pp = p3;
+  let startTimeTicks = 0, stackTraceIdx = -1, weight = 0;
+  let ok = true;
+
+  for (const field of fields) {
+    if (pp >= eventEnd) { ok = false; break; }
+    try {
+      if (field.isCP) {
+        const [idx, np] = readVarlong(buf, pp);
+        if (field.name === 'stackTrace') stackTraceIdx = idx;
+        pp = np;
+      } else {
+        const [val, np] = readVarlong(buf, pp);
+        if (field.name === 'startTime')     startTimeTicks = val;
+        else if (field.name === weightField) weight = val;
+        pp = np;
+      }
+    } catch (_) { ok = false; break; }
+  }
+
+  if (!ok || stackTraceIdx < 0) return null;
+  return { startTimeTicks, stackTraceIdx, weight: weight * ticksToNanos };
+}
+
 // --- Main entry point -------------------------------------------------------
 
 export function parseJfrBytes(bytes) {
   const buf = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
   const b = new ProfileBuilder();
 
-  // Collect samples keyed by thread name: { stack[], weights[], time[] }
-  const threadSamples = new Map();
+  // Unified sample stream: all events across all chunks/threads, each carrying
+  // a resolved stack, a time (ns), and sparse weight values per dimension.
+  // { stack: number, time: number, thread: string,
+  //   wCpu: number, wAlloc: number, wMonitor: number, wPark: number }
+  const allSamples = [];
 
   let chunkStart = 0;
   while (chunkStart < buf.length) {
@@ -340,18 +392,30 @@ export function parseJfrBytes(bytes) {
     try { classes = parseMetadata(buf, chunkStart + hdr.metaOffset); }
     catch (_) { chunkStart = chunkEnd; continue; }
 
-    // Find the event type IDs we care about (they are assigned per-recording by the schema)
-    let execSampleId = -1, stackTraceClassId = -1, methodClassId = -1;
-    let threadClassId = -1;
+    // Ticks → nanoseconds conversion factor for duration fields
+    const ticksToNs = hdr.ticksPerSecond > 0 ? 1e9 / hdr.ticksPerSecond : 1;
+
+    // Find event type IDs by name (assigned per-recording by the schema).
+    // Skip any event type absent from this recording.
+    let execSampleId   = -1, stackTraceClassId = -1, methodClassId = -1;
+    let threadClassId  = -1;
+    let allocSampleId  = -1, allocNewTlabId    = -1, allocOobTlabId  = -1;
+    let monEnterSampleId = -1, monWaitSampleId = -1;
+    let parkSampleId   = -1;
     for (const [id, cls] of classes) {
       switch (cls.name) {
-        case 'jdk.ExecutionSample':   execSampleId = id; break;
-        case 'jdk.types.StackTrace':  stackTraceClassId = id; break;
-        case 'jdk.types.Method':      methodClassId = id; break;
-        case 'java.lang.Thread':      threadClassId = id; break;
+        case 'jdk.ExecutionSample':              execSampleId       = id; break;
+        case 'jdk.types.StackTrace':             stackTraceClassId  = id; break;
+        case 'jdk.types.Method':                 methodClassId      = id; break;
+        case 'java.lang.Thread':                 threadClassId      = id; break;
+        case 'jdk.ObjectAllocationSample':       allocSampleId      = id; break;
+        case 'jdk.ObjectAllocationInNewTLAB':    allocNewTlabId     = id; break;
+        case 'jdk.ObjectAllocationOutsideTLAB':  allocOobTlabId     = id; break;
+        case 'jdk.JavaMonitorEnter':             monEnterSampleId   = id; break;
+        case 'jdk.JavaMonitorWait':              monWaitSampleId    = id; break;
+        case 'jdk.ThreadPark':                   parkSampleId       = id; break;
       }
     }
-    if (execSampleId < 0) { chunkStart = chunkEnd; continue; }
 
     // Parse all constant-pool checkpoints
     const pools = parseCheckpoints(buf, classes, chunkStart, chunkEnd);
@@ -377,10 +441,40 @@ export function parseJfrBytes(bytes) {
       return `${cn}.${n || '?'}`;
     }
 
-    // ExecutionSample field list (settings fields excluded by metadata parser)
-    const execFields = classes.get(execSampleId)?.fields ?? [];
+    // Resolve a stackTrace CP index to a ProfileBuilder stack index.
+    // Returns -1 if the stackTrace is null/truncated.
+    function resolveStack(stackTraceIdx) {
+      const strace = stackTraceClassId >= 0 ? resolveRaw(stackTraceClassId, stackTraceIdx) : null;
+      if (!strace || !Array.isArray(strace.frames)) return -1;
+      // frames are stored LEAF-FIRST; build root→leaf stack
+      const frames = strace.frames;
+      let prefix = -1;
+      for (let fi = frames.length - 1; fi >= 0; fi--) {
+        const frame = frames[fi];
+        const label = resolveMethodLabel(frame.method);
+        if (!label) continue;
+        const lineNum = frame.lineNumber ?? -1;
+        const fnIdx = b.internFunc(b.internString(label), -1, lineNum);
+        const frIdx = b.internFrame(fnIdx, lineNum, 0);
+        prefix = b.internStack(frIdx, prefix);
+      }
+      return prefix;
+    }
 
-    // Scan events
+    // Helper: get the fields array for an event type ID (or null if absent)
+    function fields(typeId) {
+      return typeId >= 0 ? (classes.get(typeId)?.fields ?? null) : null;
+    }
+
+    const execFields    = fields(execSampleId);
+    const allocFields   = fields(allocSampleId);
+    const allocNFields  = fields(allocNewTlabId);
+    const allocOFields  = fields(allocOobTlabId);
+    const monEnFields   = fields(monEnterSampleId);
+    const monWaFields   = fields(monWaitSampleId);
+    const parkFields    = fields(parkSampleId);
+
+    // Scan events in the chunk
     let p = chunkStart + CHUNK_HDR_SIZE;
     while (p < chunkEnd) {
       const eventStart = p;
@@ -391,11 +485,11 @@ export function parseJfrBytes(bytes) {
 
       const [typeId, p3] = readVarlong(buf, p2);
 
-      if (typeId === execSampleId) {
+      // --- ExecutionSample (CPU) ---
+      if (execSampleId >= 0 && typeId === execSampleId && execFields) {
         let pp = p3;
         let startTimeTicks = 0, stackTraceIdx = -1, threadIdx = -1;
         let ok = true;
-
         for (const field of execFields) {
           if (pp >= eventEnd) { ok = false; break; }
           try {
@@ -411,40 +505,73 @@ export function parseJfrBytes(bytes) {
             }
           } catch (_) { ok = false; break; }
         }
-
         if (ok && stackTraceIdx >= 0) {
           const timeNanos = hdr.startTimeNanos +
-            (startTimeTicks - hdr.startTicks) * (1e9 / hdr.ticksPerSecond);
-
+            (startTimeTicks - hdr.startTicks) * ticksToNs;
+          const stackIdx = resolveStack(stackTraceIdx);
           const tname = resolveThreadName(threadIdx);
-          if (!threadSamples.has(tname)) {
-            threadSamples.set(tname, { stack: [], weights: [], time: [] });
-          }
-          const ts = threadSamples.get(tname);
+          allSamples.push({ stack: stackIdx, time: timeNanos, thread: tname,
+            wCpu: 1, wAlloc: 0, wMonitor: 0, wPark: 0 });
+        }
+      }
 
-          // Resolve StackTrace
-          const strace = stackTraceClassId >= 0 ? resolveRaw(stackTraceClassId, stackTraceIdx) : null;
-          let stackIdx = -1;
+      // --- ObjectAllocationSample (weight field = "weight", bytes) ---
+      else if (allocSampleId >= 0 && typeId === allocSampleId && allocFields) {
+        const ev = readSampleEvent(buf, p3, eventEnd, allocFields, 'weight', 1);
+        if (ev) {
+          const timeNanos = hdr.startTimeNanos + (ev.startTimeTicks - hdr.startTicks) * ticksToNs;
+          allSamples.push({ stack: resolveStack(ev.stackTraceIdx), time: timeNanos,
+            thread: 'alloc', wCpu: 0, wAlloc: ev.weight, wMonitor: 0, wPark: 0 });
+        }
+      }
 
-          if (strace && Array.isArray(strace.frames)) {
-            // frames are stored LEAF-FIRST; build root→leaf stack
-            const frames = strace.frames;
-            let prefix = -1;
-            for (let fi = frames.length - 1; fi >= 0; fi--) {
-              const frame = frames[fi];
-              const label = resolveMethodLabel(frame.method);
-              if (!label) continue;
-              const lineNum = frame.lineNumber ?? -1;
-              const fnIdx = b.internFunc(b.internString(label), -1, lineNum);
-              const frIdx = b.internFrame(fnIdx, lineNum, 0);
-              prefix = b.internStack(frIdx, prefix);
-            }
-            stackIdx = prefix;
-          }
+      // --- ObjectAllocationInNewTLAB (weight field = "allocationSize", bytes) ---
+      else if (allocNewTlabId >= 0 && typeId === allocNewTlabId && allocNFields) {
+        const ev = readSampleEvent(buf, p3, eventEnd, allocNFields, 'allocationSize', 1);
+        if (ev) {
+          const timeNanos = hdr.startTimeNanos + (ev.startTimeTicks - hdr.startTicks) * ticksToNs;
+          allSamples.push({ stack: resolveStack(ev.stackTraceIdx), time: timeNanos,
+            thread: 'alloc', wCpu: 0, wAlloc: ev.weight, wMonitor: 0, wPark: 0 });
+        }
+      }
 
-          ts.stack.push(stackIdx);
-          ts.weights.push(1);
-          ts.time.push(timeNanos);
+      // --- ObjectAllocationOutsideTLAB (weight field = "allocationSize", bytes) ---
+      else if (allocOobTlabId >= 0 && typeId === allocOobTlabId && allocOFields) {
+        const ev = readSampleEvent(buf, p3, eventEnd, allocOFields, 'allocationSize', 1);
+        if (ev) {
+          const timeNanos = hdr.startTimeNanos + (ev.startTimeTicks - hdr.startTicks) * ticksToNs;
+          allSamples.push({ stack: resolveStack(ev.stackTraceIdx), time: timeNanos,
+            thread: 'alloc', wCpu: 0, wAlloc: ev.weight, wMonitor: 0, wPark: 0 });
+        }
+      }
+
+      // --- JavaMonitorEnter (weight field = "duration", ticks→ns) ---
+      else if (monEnterSampleId >= 0 && typeId === monEnterSampleId && monEnFields) {
+        const ev = readSampleEvent(buf, p3, eventEnd, monEnFields, 'duration', ticksToNs);
+        if (ev) {
+          const timeNanos = hdr.startTimeNanos + (ev.startTimeTicks - hdr.startTicks) * ticksToNs;
+          allSamples.push({ stack: resolveStack(ev.stackTraceIdx), time: timeNanos,
+            thread: 'monitor', wCpu: 0, wAlloc: 0, wMonitor: ev.weight, wPark: 0 });
+        }
+      }
+
+      // --- JavaMonitorWait (weight field = "duration", ticks→ns) ---
+      else if (monWaitSampleId >= 0 && typeId === monWaitSampleId && monWaFields) {
+        const ev = readSampleEvent(buf, p3, eventEnd, monWaFields, 'duration', ticksToNs);
+        if (ev) {
+          const timeNanos = hdr.startTimeNanos + (ev.startTimeTicks - hdr.startTicks) * ticksToNs;
+          allSamples.push({ stack: resolveStack(ev.stackTraceIdx), time: timeNanos,
+            thread: 'monitor', wCpu: 0, wAlloc: 0, wMonitor: ev.weight, wPark: 0 });
+        }
+      }
+
+      // --- ThreadPark (weight field = "duration", ticks→ns) ---
+      else if (parkSampleId >= 0 && typeId === parkSampleId && parkFields) {
+        const ev = readSampleEvent(buf, p3, eventEnd, parkFields, 'duration', ticksToNs);
+        if (ev) {
+          const timeNanos = hdr.startTimeNanos + (ev.startTimeTicks - hdr.startTicks) * ticksToNs;
+          allSamples.push({ stack: resolveStack(ev.stackTraceIdx), time: timeNanos,
+            thread: 'park', wCpu: 0, wAlloc: 0, wMonitor: 0, wPark: ev.weight });
         }
       }
 
@@ -454,27 +581,53 @@ export function parseJfrBytes(bytes) {
     chunkStart = chunkEnd;
   }
 
-  if (threadSamples.size === 0) {
+  if (allSamples.length === 0) {
     return b.finish([], {
       hasTiming: true, weightTypes: ['samples'], timeUnit: 'nanoseconds', isDiff: false,
     });
   }
 
-  const threads = [];
-  for (const [name, ts] of threadSamples) {
-    // Sort by time to ensure monotonic ordering (samples can interleave across threads)
-    const ord = ts.time.map((_, i) => i).sort((a, c) => ts.time[a] - ts.time[c]);
-    threads.push({
-      name,
-      samples: {
-        stack:          ord.map(i => ts.stack[i]),
-        weightsByType:  { samples: ord.map(i => ts.weights[i]) },
-        time:           ord.map(i => ts.time[i]),
-      },
-    });
-  }
+  // Sort all samples by time (monotonic order across all threads/types)
+  allSamples.sort((a, c) => a.time - c.time);
+
+  // Determine which weight dimensions are actually present
+  const hasCpu     = allSamples.some(s => s.wCpu     > 0);
+  const hasAlloc   = allSamples.some(s => s.wAlloc   > 0);
+  const hasMonitor = allSamples.some(s => s.wMonitor > 0);
+  const hasPark    = allSamples.some(s => s.wPark    > 0);
+
+  // Build weightTypes list: CPU first when present (keeps FG-031 behavior unchanged)
+  const weightTypes = [];
+  if (hasCpu)     weightTypes.push('samples');
+  if (hasAlloc)   weightTypes.push('alloc_bytes');
+  if (hasMonitor) weightTypes.push('monitor_nanos');
+  if (hasPark)    weightTypes.push('park_nanos');
+  if (weightTypes.length === 0) weightTypes.push('samples');
+
+  // ONE unified thread: the time-sorted union of ALL events (CPU + alloc + monitor + park).
+  // Each sample carries its own dimension's weight and 0 in the others (sparse multi-value), so
+  // the weight token re-aggregates the flame per dimension over the same stream — the whole point
+  // of FG-052. (Per-thread slicing is FG-053, not this issue; splitting dimensions into separate
+  // threads would strand them behind threads[0], which is all the renderer shows today.)
+  // Name the thread after the modal CPU thread (cosmetic; the stream is the union).
+  const tc = new Map();
+  for (const s of allSamples) if (s.wCpu > 0) tc.set(s.thread, (tc.get(s.thread) || 0) + 1);
+  let tname = 'all'; let bestC = 0;
+  for (const [n, c] of tc) if (c > bestC) { bestC = c; tname = n; }
+
+  const weightsByType = {};
+  if (hasCpu)     weightsByType['samples']       = allSamples.map(s => s.wCpu);
+  if (hasAlloc)   weightsByType['alloc_bytes']   = allSamples.map(s => s.wAlloc);
+  if (hasMonitor) weightsByType['monitor_nanos'] = allSamples.map(s => s.wMonitor);
+  if (hasPark)    weightsByType['park_nanos']    = allSamples.map(s => s.wPark);
+  for (const wt of weightTypes) { if (!weightsByType[wt]) weightsByType[wt] = allSamples.map(() => 0); }
+
+  const threads = [{
+    name: tname,
+    samples: { stack: allSamples.map(s => s.stack), weightsByType, time: allSamples.map(s => s.time) },
+  }];
 
   return b.finish(threads, {
-    hasTiming: true, weightTypes: ['samples'], timeUnit: 'nanoseconds', isDiff: false,
+    hasTiming: true, weightTypes, timeUnit: 'nanoseconds', isDiff: false,
   });
 }

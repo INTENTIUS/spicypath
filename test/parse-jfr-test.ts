@@ -1,10 +1,10 @@
-// JFR ingestion test (FG-031). Requires a JDK on PATH.
+// JFR ingestion test (FG-031 + FG-052). Requires a JDK on PATH.
 // If java/jfr are absent, prints "SKIP (no JDK)" and exits 0.
 // Otherwise: ensures the reference recording exists (regenerates it if missing),
 // parses it, and asserts correctness against the `jfr print` oracle.
 //   node test/parse-jfr-test.ts
 import { execSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { checkInvariants } from '../src/model.js';
 import { parseJfr } from './parse-jfr.ts';
 import { ingestBytes } from '../src/ingest.js';
@@ -20,15 +20,23 @@ function assert(cond: boolean, msg: string): void {
   if (!cond) { console.error(`FAIL  ${msg}`); process.exit(1); }
 }
 
-function topLeaves(p: ReturnType<typeof parseJfr>, n = 5): { name: string; count: number }[] {
-  const t = p.threads[0];
-  const col = t.samples.weightsByType.samples;
+// Top leaf functions for a given weight column (by column name, default 'samples').
+function topLeaves(
+  p: ReturnType<typeof parseJfr>,
+  weightType = 'samples',
+  n = 5,
+): { name: string; count: number }[] {
+  // Aggregate across all threads
   const m = new Map<number, number>();
-  for (let i = 0; i < t.samples.stack.length; i++) {
-    const st = t.samples.stack[i];
-    if (st < 0) continue;
-    const fn = p.frameTable.func[p.stackTable.frame[st]];
-    m.set(fn, (m.get(fn) ?? 0) + (col?.[i] ?? 1));
+  for (const t of p.threads) {
+    const col = t.samples.weightsByType[weightType];
+    if (!col) continue;
+    for (let i = 0; i < t.samples.stack.length; i++) {
+      const st = t.samples.stack[i];
+      if (st < 0) continue;
+      const fn = p.frameTable.func[p.stackTable.frame[st]];
+      m.set(fn, (m.get(fn) ?? 0) + (col[i] ?? 0));
+    }
   }
   return [...m.entries()]
     .sort((a, b) => b[1] - a[1])
@@ -44,15 +52,27 @@ if (!hasCmd('java') || !hasCmd('jfr')) {
 }
 
 // ---- Ensure the reference recording exists ---------------------------------
+// FG-052: JfrWorkload.java was updated to include allocHot(), so delete any
+// cached recording built from the old source to force regeneration.
 
 const OUT_DIR  = 'test/out';
 const JFR_PATH = `${OUT_DIR}/jfr-workload.jfr`;
 const SRC_PATH = 'test/gen/JfrWorkload.java';
+const CLS_PATH = `${OUT_DIR}/JfrWorkload.class`;
 
 if (!existsSync(OUT_DIR)) mkdirSync(OUT_DIR, { recursive: true });
 
-if (!existsSync(JFR_PATH)) {
+// Regenerate if source is newer than the recording or if recording is absent.
+const needRegen = !existsSync(JFR_PATH) || (() => {
+  const jfrMs = statSync(JFR_PATH).mtimeMs;
+  const srcMs = existsSync(SRC_PATH) ? statSync(SRC_PATH).mtimeMs : 0;
+  return srcMs > jfrMs;
+})();
+
+if (needRegen) {
   console.log('Generating jfr-workload.jfr …');
+  if (existsSync(JFR_PATH)) rmSync(JFR_PATH);
+  if (existsSync(CLS_PATH)) rmSync(CLS_PATH);
   execSync(`javac -d ${OUT_DIR} ${SRC_PATH}`, { stdio: 'pipe' });
   execSync(
     `java -cp ${OUT_DIR} ` +
@@ -78,11 +98,10 @@ console.log('ok    checkInvariants');
 
 // ---- (b) Sample count ------------------------------------------------------
 
-// Sample count is sampling-rate × CPU-speed dependent (a shared CI runner yields fewer
-// on-CPU samples than a laptop), so this is only a loose "not empty / not garbage" check —
-// the real correctness assertion is fib dominance below.
+// FG-052: total sample count now includes CPU + alloc (+ any monitor/park) events.
+// Still a loose "not empty / not garbage" check; fib dominance remains the real assertion.
 const nSamples = profile.threads.reduce((s, t) => s + t.samples.stack.length, 0);
-assert(nSamples >= 20 && nSamples <= 10000, `sample count ${nSamples} out of sane range [20,10000]`);
+assert(nSamples >= 20 && nSamples <= 100000, `sample count ${nSamples} out of sane range [20,100000]`);
 console.log(`ok    sample count = ${nSamples}`);
 
 // ---- (c) Time array --------------------------------------------------------
@@ -91,43 +110,111 @@ for (const t of profile.threads) {
   const time = t.samples.time!;
   assert(time.length === t.samples.stack.length, 'time.length == stack.length');
   for (let i = 1; i < time.length; i++) {
-    assert(time[i] >= time[i - 1], `time not monotonic at ${i}`);
+    assert(time[i] >= time[i - 1], `time not monotonic at ${i} in thread "${t.name}"`);
   }
 }
 console.log('ok    time array monotonic');
 
-// ---- (d) Hot leaf is fib ---------------------------------------------------
+// ---- (d) Hot CPU leaf is fib (FG-031 regression) ----------------------------
 
-const leaves = topLeaves(profile);
-console.log('Top leaf functions:');
-for (const { name, count } of leaves) {
+const cpuLeaves = topLeaves(profile, 'samples');
+console.log('Top CPU leaf functions:');
+for (const { name, count } of cpuLeaves) {
   console.log(`  ${String(count).padStart(5)}  ${name}`);
 }
 
-const hotLeaf = leaves[0];
-assert(!!hotLeaf, 'no samples found');
+const hotCpuLeaf = cpuLeaves[0];
+assert(!!hotCpuLeaf, 'no CPU samples found');
 assert(
-  hotLeaf.name.toLowerCase().includes('fib'),
-  `hottest leaf "${hotLeaf.name}" does not contain "fib" — constant-pool resolution is wrong`,
+  hotCpuLeaf.name.toLowerCase().includes('fib'),
+  `hottest CPU leaf "${hotCpuLeaf.name}" does not contain "fib" — constant-pool resolution is wrong`,
 );
-console.log(`ok    hot leaf = "${hotLeaf.name}" (${hotLeaf.count}/${nSamples} samples)`);
-
-// ---- (e) fib dominance (oracle says 226/227) --------------------------------
-
-const fibCount = leaves.filter(l => l.name.toLowerCase().includes('fib'))
-                       .reduce((s, l) => s + l.count, 0);
-const fibFrac = fibCount / nSamples;
+const nCpuSamples = profile.threads.reduce((s, t) => {
+  const col = t.samples.weightsByType['samples'];
+  return s + (col ? col.reduce((a, v) => a + v, 0) : 0);
+}, 0);
+const fibCount = cpuLeaves.filter(l => l.name.toLowerCase().includes('fib'))
+                          .reduce((s, l) => s + l.count, 0);
+const fibFrac = fibCount / nCpuSamples;
 assert(fibFrac >= 0.7, `fib fraction ${(fibFrac * 100).toFixed(1)}% < 70% — stacks misresolved`);
-console.log(`ok    fib dominance = ${(fibFrac * 100).toFixed(1)}% of ${nSamples} samples`);
+console.log(`ok    hot CPU leaf = "${hotCpuLeaf.name}" (fib dominance ${(fibFrac * 100).toFixed(1)}%)`);
 
-// ---- (f) ingest path: the file-open route (drop / picker) detects JFR by magic ----------
+// ---- (e) FG-052: weightTypes includes alloc_bytes --------------------------
+
+assert(
+  profile.capabilities.weightTypes.includes('alloc_bytes'),
+  `weightTypes ${JSON.stringify(profile.capabilities.weightTypes)} missing "alloc_bytes"`,
+);
+console.log(`ok    weightTypes = ${JSON.stringify(profile.capabilities.weightTypes)}`);
+
+// ---- (e2) FG-052: dimensions are UNIFIED in one stream, reachable by the renderer ----------
+// The renderer only shows threads[0]; the dimensions must NOT be split across threads (else the
+// alloc flame is stranded behind a thread the UI never shows). Assert one thread carrying BOTH
+// non-zero CPU and non-zero alloc weights over the same sample stream.
+{
+  assert(profile.threads.length === 1, `expected 1 unified thread, got ${profile.threads.length} (dimensions split across threads → alloc unreachable in the app)`);
+  const w = profile.threads[0].samples.weightsByType;
+  const cpuKey = w['samples'] ? 'samples' : 'cpu_nanos';
+  const cpuNz = (w[cpuKey] || []).filter((x: number) => x > 0).length;
+  const allocNz = (w['alloc_bytes'] || []).filter((x: number) => x > 0).length;
+  assert(cpuNz > 0 && allocNz > 0, `threads[0] must carry both dimensions: cpuNz=${cpuNz} allocNz=${allocNz}`);
+  console.log(`ok    unified thread: ${profile.threads[0].samples.stack.length} samples, cpu ${cpuNz}nz + alloc ${allocNz}nz (reachable in the app)`);
+}
+
+// ---- (f) FG-052: alloc_bytes column — hot allocator is allocHot -----------
+
+const allocLeaves = topLeaves(profile, 'alloc_bytes', 10);
+console.log('Top alloc_bytes leaf functions:');
+for (const { name, count } of allocLeaves) {
+  console.log(`  ${String(count).padStart(12)}  ${name}`);
+}
+
+assert(allocLeaves.length > 0, 'no alloc_bytes samples found');
+const hotAllocLeaf = allocLeaves[0];
+assert(
+  hotAllocLeaf.name.toLowerCase().includes('allochot') ||
+  hotAllocLeaf.name.toLowerCase().includes('alloc'),
+  `hottest alloc leaf "${hotAllocLeaf.name}" does not contain "alloc" — alloc stack resolution wrong`,
+);
+console.log(`ok    hot alloc leaf = "${hotAllocLeaf.name}"`);
+
+// ---- (g) FG-052: weight column lengths == sample count (invariants already cover this, belt+suspenders)
+
+for (const t of profile.threads) {
+  const len = t.samples.stack.length;
+  for (const wt of profile.capabilities.weightTypes) {
+    const col = t.samples.weightsByType[wt];
+    assert(col !== undefined && col.length === len,
+      `thread "${t.name}" weight "${wt}" length ${col?.length} != samples ${len}`);
+  }
+}
+console.log('ok    all weight column lengths == sample count');
+
+// ---- (h) FG-052: monitor_nanos / park_nanos — best-effort (don't fail if absent) -----------
+
+if (profile.capabilities.weightTypes.includes('monitor_nanos')) {
+  const monLeaves = topLeaves(profile, 'monitor_nanos', 5);
+  console.log(`ok    monitor_nanos present (${monLeaves.length} distinct leaf(s))`);
+} else {
+  console.log('note  monitor_nanos not present in this recording (ok — workload has no contention)');
+}
+if (profile.capabilities.weightTypes.includes('park_nanos')) {
+  const parkLeaves = topLeaves(profile, 'park_nanos', 5);
+  console.log(`ok    park_nanos present (${parkLeaves.length} distinct leaf(s))`);
+} else {
+  console.log('note  park_nanos not present in this recording (ok — workload does not park)');
+}
+
+// ---- (i) ingest path: the file-open route (drop / picker) detects JFR by magic ----------
 // File-open goes through ingestBytes, not parseJfr directly — verify both the .jfr extension
 // and the EXTENSIONLESS case (magic-byte sniff) so a dropped/renamed .jfr still works.
 const bytes = new Uint8Array(readFileSync(JFR_PATH));
 const viaExt = await ingestBytes('recording.jfr', bytes);
 const viaMagic = await ingestBytes('noextension', bytes); // forces the content sniff
-assert(viaExt.capabilities.hasTiming && viaExt.threads[0].samples.stack.length === nSamples, 'ingestBytes(.jfr) mismatch');
-assert(viaMagic.threads[0].samples.stack.length === nSamples, 'ingestBytes(magic, no extension) failed to detect JFR');
+const nSamplesViaExt = viaExt.threads.reduce((s, t) => s + t.samples.stack.length, 0);
+assert(viaExt.capabilities.hasTiming && nSamplesViaExt === nSamples, 'ingestBytes(.jfr) mismatch');
+assert(viaMagic.threads.reduce((s, t) => s + t.samples.stack.length, 0) === nSamples,
+  'ingestBytes(magic, no extension) failed to detect JFR');
 console.log(`ok    ingest path detects JFR by extension and by magic (${nSamples} samples both)`);
 
 console.log('\nPASS  parse-jfr-test');

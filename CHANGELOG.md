@@ -10,6 +10,14 @@ linkable — the entries record *what* shipped and *why*, not the original commi
 
 ## Enhancements (post-M4)
 
+- FG-052 JFR allocation/lock/wait events — `src/parse-jfr.js` (which read only `jdk.ExecutionSample`)
+  now also decodes `jdk.ObjectAllocationSample`/`...InNewTLAB`/`...OutsideTLAB` (bytes →
+  `alloc_bytes`), `jdk.JavaMonitorEnter`/`Wait`, and `jdk.ThreadPark` (duration → `monitor_nanos`/
+  `park_nanos`), each resolved by name from the chunk metadata. All events are unified into one
+  time-sorted sample stream with a sparse weight column per dimension (a sample's own dimension
+  non-zero, 0 in the others), so the weight token cycles CPU ↔ allocations ↔ wait and the flame
+  re-aggregates per dimension — reusing the FG-046 byte / FG-048 time formatters. A CPU-only
+  recording is unchanged.
 - FG-051 Call graph view — a third view type (after flame and radial): a weighted directed graph
   of the call structure (nodes = functions sized/colored by weight, edges = caller→callee scaled
   by cost). Built in five phases: `src/callgraph.js` folds the CallNodeTable into a function-level
