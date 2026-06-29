@@ -8,6 +8,14 @@ is in [`docs/architecture.md`](./docs/architecture.md).
 Everything below predates the squashed initial commit, so individual change hashes aren't
 linkable — the entries record *what* shipped and *why*, not the original commit refs.
 
+## Enhancements (post-M4)
+
+- FG-047 Native profiles group by shared object — `src/parse-perf.js` now keeps the DSO/binary
+  it parses from each `perf script` frame (it used to discard it) and stores it as the func's
+  file, so `packageOf` colors and groups native C frames by binary (the main executable vs
+  `libc` vs `kernel`). Extends "color = module" to native code, where the symbol name carries no
+  package. Same-named symbols in different binaries are now distinct funcs.
+
 ## M3.5 — UI reshape: chrome-less, full-bleed, context-driven
 
 The viewer stopped looking like a speedscope clone: full-bleed data, controls summoned on
