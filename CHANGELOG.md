@@ -87,6 +87,12 @@ semantic color · labels-where-fit · path highlight · auto-collapse) landed he
 The differentiating layer — making spicypath not file-only. Remaining M4 work is tracked in
 [GitHub issues](https://github.com/INTENTIUS/spicypath/issues?q=is%3Aopen+milestone%3AM4).
 
+- FG-030 Source-line view — `src/sourceline.js` aggregates per-line self/total weight for a
+  selected function (recursion-safe: a line of `f` on the stack at multiple depths counts once
+  per sample; callee lines never leak into `f`). Drop source files (or "Load source files…" in
+  ⌘K) and a selected function's source renders with a per-line weight gutter + heat shading;
+  source is matched locally by basename and never uploaded. The panel is opt-in — it stays
+  hidden until source is loaded — and shows a clear "source not loaded" state otherwise.
 - FG-029 Persisted shareable links — view state (view type · mode · weight · search · zoom/
   focal · crop) is encoded into `location.hash` (`history.replaceState`, debounced) and
   restored on load. Focus is stored as a stable root→leaf name path and re-resolved after

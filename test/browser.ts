@@ -615,6 +615,15 @@ try {
   check('FG-029: focus re-resolves to the same stack after rebuild', !!(restoredFocus.ok && savedFocusState && JSON.stringify(restoredFocus.names) === JSON.stringify(savedFocusState.fp)), JSON.stringify(restoredFocus));
   await evalIn(`window.__app.resetView()`); // leave a clean state
 
+  // --- FG-030: source-line panel is opt-in (gated on loaded source) + loadSourceText plumbing ---
+  await evalIn(`window.__app.loadSample('samples/node.cpuprofile')`);
+  await poll(`window.__fv && /node\\.cpuprofile/.test(document.getElementById('info').innerText||'') ? 1 : 0`);
+  const srcGate = await evalIn(`(()=>{const f=window.__fv;const b=f.boxes.find(x=>x.depth>0)||f.boxes[0];if(f._opts.onSelect)f._opts.onSelect(b);return {on:document.getElementById('srcpanel').classList.contains('on'),srcCount:window.__app.getSrcFiles().size};})()`);
+  check('FG-030: source panel stays hidden until source is loaded (opt-in gate)', srcGate.on === false && srcGate.srcCount === 0, JSON.stringify(srcGate));
+  const srcReg = await evalIn(`(()=>{window.__app.loadSourceText('probe.js','l1\\nl2\\nl3\\n');return window.__app.getSrcFiles().size;})()`);
+  check('FG-030: loadSourceText registers a source file', srcReg >= 1, `srcFiles=${srcReg}`);
+  await evalIn(`window.__app.resetView()`);
+
 } catch (e: any) {
   failures++;
   console.log('  ✗ harness error —', e?.message || e);

@@ -42,6 +42,22 @@
     #detail .chip { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 5px; vertical-align: middle; }
     #drop { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; background: rgba(31,111,235,0.12); border: 3px dashed var(--accent); z-index: 10; font-size: 18px; color: var(--fg); pointer-events: none; }
     #drop.on { display: flex; }
+    /* FG-030: source-line panel — sits above the detail slide-over, full-width on the right edge */
+    #srcpanel { position: fixed; right: 0; bottom: 0; width: min(560px, 98vw); max-height: 60vh; display: none; flex-direction: column; background: var(--panel); border: 1px solid var(--line); border-radius: 10px 0 0 0; box-shadow: 0 8px 30px rgba(0,0,0,0.45); z-index: 7; font-size: 12px; overflow: hidden; }
+    #srcpanel.on { display: flex; }
+    #srcpanel .sp-head { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-bottom: 1px solid var(--line); background: var(--bg2); flex-shrink: 0; }
+    #srcpanel .sp-title { color: var(--dim); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+    #srcpanel .sp-close { cursor: pointer; color: var(--faint); font-size: 14px; line-height: 1; padding: 0 3px; }
+    #srcpanel .sp-close:hover { color: var(--fg); }
+    #srcpanel .sp-body { overflow: auto; flex: 1; }
+    #srcpanel .sp-msg { padding: 12px 14px; color: var(--faint); font-size: 12px; }
+    #srcpanel table { border-collapse: collapse; width: 100%; font: 11px Menlo, Consolas, monospace; }
+    #srcpanel tr { line-height: 1.55; }
+    #srcpanel .sp-ln { color: var(--faint); text-align: right; padding: 0 6px 0 8px; user-select: none; min-width: 36px; border-right: 1px solid var(--line); }
+    #srcpanel .sp-w { text-align: right; padding: 0 4px; min-width: 60px; color: var(--dim); white-space: nowrap; }
+    #srcpanel .sp-code { padding: 0 8px; white-space: pre; color: var(--fg); }
+    #srcpanel tr.sp-hot { background: var(--line); }
+    #srcpanel .sp-swatch { display: inline-block; width: 7px; height: 100%; min-height: 1em; vertical-align: middle; border-radius: 2px; }
     #empty { position: fixed; inset: 28px 0 0 0; display: flex; align-items: center; justify-content: center; color: var(--faint); font-size: 15px; pointer-events: none; }
     #ctxmenu { position: fixed; display: none; min-width: 168px; max-width: 260px; padding: 4px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 8px 30px rgba(0,0,0,0.5); z-index: 9; font-size: 12px; }
     #ctxmenu.on { display: block; }
@@ -105,6 +121,14 @@
   <div id="ctxmenu"></div>
   <div id="empty">drop a profile  ·  ⌘K commands  ·  ⌘F search</div>
   <div id="drop">drop a profile — pprof · .cpuprofile · folded · speedscope (.gz ok)</div>
+  <!-- FG-030: source-line panel -->
+  <div id="srcpanel">
+    <div class="sp-head">
+      <span class="sp-title" id="sp-title">source</span>
+      <span class="sp-close" id="sp-close" title="close source panel">✕</span>
+    </div>
+    <div class="sp-body" id="sp-body"><p class="sp-msg">no source loaded</p></div>
+  </div>
 
   <div id="statusbar">
     <span id="modes">
@@ -126,6 +150,8 @@
     <select id="wt" hidden></select>
     <input id="file" type="file" hidden>
     <input id="file2" type="file" hidden>
+    <!-- FG-030: source file picker (multiple + directory) -->
+    <input id="file-src" type="file" hidden multiple webkitdirectory>
   </div>
 
   <div id="searchpill"><input id="search" type="search" placeholder="search (regex)" size="20"><span id="searchInfo"></span></div>
@@ -174,13 +200,122 @@
     import { buildCallNodeTable } from './callnode.js';
     import { setTheme, listThemes, getThemeName, getTokens, luminance } from './theme.js';
     import { fetchPprof } from './fetch-pprof.js';
+    import { aggregateByLine, funcBasename } from './sourceline.js';
+    import { colorForFunc } from './colors.js';
+
+    // FG-030: source-file registry — Map<basename, text> loaded by the user.
+    // Nothing is uploaded; all reading is local (FileReader). Source files are matched to
+    // profile functions by their basename (case-sensitive). When the user drops a folder
+    // the browser walks it via webkitdirectory and we see every file in the subtree.
+    const srcFiles = new Map(); // basename → source text
+
+    // Known profile-format extensions / MIME sniffing patterns. A dropped file matching
+    // any of these is treated as a profile; everything else is a candidate source file.
+    // Every extension src/ingest.js recognizes — a dropped file matching one is a profile,
+    // not source. Keep in sync with ingest.js (incl. .otlp and .gecko/.json via the sniff).
+    const PROFILE_EXTS = new Set(['.pprof', '.pb', '.prof', '.otlp', '.cpuprofile', '.json', '.gz', '.folded', '.collapsed', '.txt', '.perf', '.stacks']);
+    function looksLikeProfile(file) {
+      const name = file.name.toLowerCase();
+      if (name.endsWith('.speedscope.json') || name.endsWith('.cpuprofile')) return true;
+      const dot = name.lastIndexOf('.');
+      const ext = dot >= 0 ? name.slice(dot) : '';
+      return PROFILE_EXTS.has(ext);
+    }
+
+    async function loadSourceFile(file) {
+      return new Promise((resolve, reject) => {
+        const r = new FileReader();
+        r.onload = () => { srcFiles.set(file.name, r.result); resolve(); };
+        r.onerror = () => reject(r.error);
+        r.readAsText(file);
+      });
+    }
+
+    // Esc: hide source panel
+    const srcPanel = document.getElementById('srcpanel');
+    const srcBody  = document.getElementById('sp-body');
+    const srcTitle = document.getElementById('sp-title');
+    document.getElementById('sp-close').onclick = () => srcPanel.classList.remove('on');
+
+    // Update the source-line panel for the currently selected function.
+    // Called after selection changes and after new source files are loaded.
+    function updateSourcePanel(box) {
+      if (!box || !profile || !view) { srcPanel.classList.remove('on'); return; }
+      const f = box.func;
+      const basename = funcBasename(profile, f);
+      if (!basename) { srcPanel.classList.remove('on'); return; }
+      // Source view is opt-in: don't auto-pop the panel until the user has loaded source
+      // files (drop, or "Load source files…" in ⌘K). Otherwise it would appear on every
+      // selection for any profile carrying file info, overlapping the detail slide-over.
+      if (srcFiles.size === 0) { srcPanel.classList.remove('on'); return; }
+
+      srcPanel.classList.add('on');
+      const src = srcFiles.get(basename);
+      if (!src) {
+        srcTitle.textContent = basename;
+        srcBody.innerHTML = `<p class="sp-msg">source not loaded — drop ${_esc(basename)} or a folder containing it</p>`;
+        return;
+      }
+
+      // Compute per-line weights for this function.
+      const lines = aggregateByLine(view.ct, profile, f);
+      const grandTotal = view.ct.grandTotal || 1;
+      const pct = (v) => v ? (100 * v / grandTotal).toFixed(1) + '%' : '';
+
+      // Pick a color for the heat shading (reuse colorForFunc from colors.js).
+      const heatColor = colorForFunc(profile, f);
+      // Parse hex to RGB components once for alpha blending.
+      const hr = parseInt(heatColor.slice(1, 3), 16);
+      const hg = parseInt(heatColor.slice(3, 5), 16);
+      const hb = parseInt(heatColor.slice(5, 7), 16);
+
+      // Find the max total for intensity scaling.
+      let maxTotal = 0;
+      for (const { total } of lines.values()) if (total > maxTotal) maxTotal = total;
+      const intensity = (total) => maxTotal > 0 ? total / maxTotal : 0;
+
+      const srcLines = src.split('\n');
+
+      // Find which line to scroll to (funcTable.line = definition line, 1-based).
+      const defLine = profile.funcTable.line[f];
+      const firstHotLine = lines.size > 0 ? Math.min(...lines.keys()) : -1;
+      const scrollTarget = defLine > 0 ? defLine : firstHotLine;
+
+      const rows = srcLines.map((code, idx) => {
+        const lineNo = idx + 1; // 1-based
+        const w = lines.get(lineNo);
+        const tot = w ? w.total : 0;
+        const slf = w ? w.self : 0;
+        const hot = tot > 0;
+        const alpha = hot ? (0.08 + 0.3 * intensity(tot)).toFixed(3) : '0';
+        const bg = hot ? `background:rgba(${hr},${hg},${hb},${alpha})` : '';
+        const gutterText = hot ? pct(tot) + (slf ? ' · ' + pct(slf) : '') : '';
+        return `<tr class="${hot ? 'sp-hot' : ''}" data-line="${lineNo}" style="${bg}">` +
+          `<td class="sp-ln">${lineNo}</td>` +
+          `<td class="sp-w">${_esc(gutterText)}</td>` +
+          `<td class="sp-code">${_esc(code)}</td>` +
+          `</tr>`;
+      }).join('');
+
+      srcTitle.textContent = basename + (defLine > 0 ? `:${defLine}` : '');
+      srcBody.innerHTML = `<table><tbody>${rows}</tbody></table>`;
+
+      // Scroll to definition line (or first hot line).
+      if (scrollTarget > 0) {
+        const targetRow = srcBody.querySelector(`tr[data-line="${scrollTarget}"]`);
+        if (targetRow) targetRow.scrollIntoView({ block: 'center' });
+      }
+    }
+
+    // Small HTML-escape helper used in the source panel (view has _esc but that's on the view instance).
+    function _esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
 
     const cv = document.getElementById('cv');
     const wtSel = document.getElementById('wt');
     const bGraph = document.getElementById('m-graph'), bChart = document.getElementById('m-chart'), bSand = document.getElementById('m-sandwich');
     const searchEl = document.getElementById('search'), info = document.getElementById('info');
     const detail = document.getElementById('detail'), stWeight = document.getElementById('st-weight'), stDiff = document.getElementById('st-diff'), stView = document.getElementById('st-viewtype');
-    const showDetail = (b) => detail.classList.toggle('on', !!b); // slide-over on frame-select
+    const showDetail = (b) => { detail.classList.toggle('on', !!b); updateSourcePanel(b); }; // slide-over + source panel on frame-select
     const VIEWS = { flame: FlameView, radial: RadialView }; // view-type registry (FG-038/039)
     const SAMPLES = [['vert.x (real · timed · deep)', 'samples/real-vertx.speedscope.json'], ['Node CPU (timed · simple)', 'samples/node.cpuprofile'], ['pprof (multi-metric)', 'samples/multi-value.pprof'], ['5k samples (scale)', 'samples/scale-5000.cpuprofile']];
     let view, profile, mode = 'graph', fileLabel = '', viewType = 'flame', collapsed = true;
@@ -376,6 +511,7 @@
       applyCaps(); // keep mode-button enabled-state in sync with the active view type
       setMode('graph');
       detail.innerHTML = ''; showDetail(false);
+      srcPanel.classList.remove('on');
       document.getElementById('searchInfo').textContent = '';
       updateInfo();
       if (!_restoringHash) _scheduleHashWrite();
@@ -448,6 +584,14 @@
     stDiff.onclick = () => resetView();
     stView.onclick = () => { const k = Object.keys(VIEWS); setViewType(k[(k.indexOf(viewType) + 1) % k.length]); };
     document.getElementById('file').onchange = (e) => e.target.files[0] && openFile(e.target.files[0]);
+    // FG-030: source file picker
+    document.getElementById('file-src').onchange = async (e) => {
+      const files = Array.from(e.target.files || []);
+      if (!files.length) return;
+      await Promise.all(files.map(loadSourceFile));
+      if (view) { const box = view._selBox; if (box) updateSourcePanel(box); }
+      e.target.value = ''; // allow re-picking the same path
+    };
     document.getElementById('file2').onchange = async (e) => {
       const f = e.target.files[0]; if (!f || !profile) return;
       try {
@@ -506,6 +650,10 @@
       readHash: _readHash,
       applyHashState: _applyHashState,
       getHashSource: () => _hashSource,
+      // FG-030: source-panel test hooks
+      loadSourceText: (name, text) => { srcFiles.set(name, text); if (view) { const box = view._selBox; if (box) updateSourcePanel(box); } },
+      getSrcFiles: () => srcFiles,
+      getSourcePanel: () => ({ on: srcPanel.classList.contains('on'), title: srcTitle.textContent, body: srcBody.textContent }),
     };
 
     // FG-035: right-click frame context menu (calls the view's public action API)
@@ -553,6 +701,7 @@
     function paletteCommands() {
       const c = [];
       c.push(['Open profile…', () => document.getElementById('file').click()]);
+      c.push(['Load source files…', () => document.getElementById('file-src').click()]);
       c.push(['Connect to live /debug/pprof…', () => openConnect()]);
       if (liveSource) c.push(['Refetch live profile', () => doFetchPprof(liveSource.url, liveSource.seconds)]);
       c.push(['Compare profile…', () => document.getElementById('file2').click()]);
@@ -638,11 +787,32 @@
       window.addEventListener('mousedown', done, { once: true });
     }
 
-    // drag-and-drop
+    // drag-and-drop — distinguish profile files from source files (FG-030).
+    // A file that looks like a profile (known extension) is ingested as a profile.
+    // Everything else is treated as a candidate source file and registered in srcFiles.
+    // Multiple files can be dropped at once; profiles take the first matching file.
     const drop = document.getElementById('drop');
     document.addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('on'); });
     document.addEventListener('dragleave', (e) => { if (e.relatedTarget === null) drop.classList.remove('on'); });
-    document.addEventListener('drop', async (e) => { e.preventDefault(); drop.classList.remove('on'); const f = e.dataTransfer.files[0]; if (f) await openFile(f); });
+    document.addEventListener('drop', async (e) => {
+      e.preventDefault(); drop.classList.remove('on');
+      const files = Array.from(e.dataTransfer.files || []);
+      if (!files.length) return;
+      // Separate profiles from source files.
+      const profileFiles = files.filter(looksLikeProfile);
+      const sourceFiles  = files.filter(f => !looksLikeProfile(f));
+      // Load source files first (they're fast and don't replace the profile).
+      if (sourceFiles.length) {
+        await Promise.all(sourceFiles.map(loadSourceFile));
+        // Refresh the source panel if a function is already selected.
+        if (view) {
+          const box = view._selBox;
+          if (box) updateSourcePanel(box);
+        }
+      }
+      // Then load a profile if one was dropped.
+      if (profileFiles.length) await openFile(profileFiles[0]);
+    });
 
     // keymap: ⌘K palette · ⌘F or / search · 1/2/3 modes · c collapse · Esc dismiss/reset
     window.addEventListener('keydown', (e) => {
@@ -652,7 +822,7 @@
       const inInput = /^(INPUT|SELECT|TEXTAREA)$/.test(document.activeElement?.tagName || '');
       if (e.key === '/' && !inInput) { e.preventDefault(); openSearch(); return; }
       if (e.key === '?' && !inInput) { e.preventDefault(); toggleHelp(); return; }
-      if (e.key === 'Escape') { hideMenu(); closePalette(); closeThemePicker(); closeConnect(); help.classList.remove('on'); if (pill.classList.contains('on') && !searchEl.value) closeSearch(); if (view && !inInput) { view.resetZoom(); showDetail(false); _scheduleHashWrite(); } return; }
+      if (e.key === 'Escape') { hideMenu(); closePalette(); closeThemePicker(); closeConnect(); help.classList.remove('on'); srcPanel.classList.remove('on'); if (pill.classList.contains('on') && !searchEl.value) closeSearch(); if (view && !inInput) { view.resetZoom(); showDetail(false); _scheduleHashWrite(); } return; }
       if (inInput || !view || !profile) return;
       const caps = (VIEWS[viewType].capabilities || { modes: ['graph', 'chart', 'sandwich'] }).modes;
       if (e.key === '1' && caps.includes('chart')) setMode('chart');

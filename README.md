@@ -37,6 +37,9 @@ to open your own; `.gz` is decompressed automatically.
 - **Zoom** by double-clicking a frame or span; **Esc** resets.
 - **Diff** two profiles with *compare* — red marks regressions, blue improvements.
 - **Export** the current profile as `.speedscope.json`, `.folded`, or an `.svg` snapshot.
+- **Source lines** — drop your source files (or *Load source files…* in ⌘K) and a selected
+  function's source shows with per-line weight and heat shading. Matched locally by file name;
+  nothing is uploaded.
 - **Share** a view — the URL captures view, mode, weight, search, and zoom; links to a bundled
   sample or a live `/debug/pprof` endpoint reopen the same profile (dropped local files can't be
   re-fetched, but the view settings still restore).
@@ -66,6 +69,7 @@ node test/export-test.ts  # export → re-import stability
 node test/diff-test.ts    # diff math
 node test/otlp-test.ts    # pprof <-> OTLP lossless-edge proof
 node test/sandwich-test.ts # sandwich focal selection (incl. hub-less profiles)
+node test/sourceline-test.ts # per-line weight aggregation (recursion-safe)
 node test/bench.ts         # scale benchmark
 node test/browser.ts      # real-Chrome interaction checks (CDP)
 ```
