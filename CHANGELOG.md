@@ -10,6 +10,12 @@ linkable — the entries record *what* shipped and *why*, not the original commi
 
 ## Enhancements (post-M4)
 
+- FG-050 Interactive call stack — the detail slide-over's stack trace is now navigable: each row
+  carries its call-node (graph) or function (chart/sandwich) identity, and clicking an ancestor
+  selects it (new `BaseView.selectNode`, sibling of `selectFunc`) — outlining its instances and
+  refreshing the panel — while a modifier-click focuses/zooms it via the per-view focus path.
+  Chart/sandwich rows degrade to function-select. No layout change; the All-Instances aggregate
+  stays correct.
 - FG-049 Function list panel — an on-demand sortable table of every function (self · total ·
   `file:line`), summoned from ⌘K or a status-strip token, with a substring/regex filter, header
   sort, and a disclosed row cap. Backed by the shared `functionStats`. A row click selects the

@@ -151,7 +151,7 @@ try {
     await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: pick.x, y: pick.y, button: 'left', buttons: 1, clickCount: 1 }, sessionId);
     await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: pick.x, y: pick.y, button: 'left', buttons: 0, clickCount: 1 }, sessionId);
     await sleep(80);
-    const d = await evalIn(`(()=>{const el=document.getElementById('detail');const sw=el.querySelectorAll('.dstack span[style*="inline-block"]');let minW=1e9;sw.forEach(s=>{minW=Math.min(minW,s.getBoundingClientRect().width);});return {swatches:sw.length,minW:sw.length?Math.round(minW):0,nan:/NaN/.test(el.innerText||''),text:(el.innerText||'').replace(/\\s+/g,' ').trim().slice(0,70)};})()`);
+    const d = await evalIn(`(()=>{const el=document.getElementById('detail');const sw=el.querySelectorAll('.dstack .chip');let minW=1e9;sw.forEach(s=>{minW=Math.min(minW,s.getBoundingClientRect().width);});return {swatches:sw.length,minW:sw.length?Math.round(minW):0,nan:/NaN/.test(el.innerText||''),text:(el.innerText||'').replace(/\\s+/g,' ').trim().slice(0,70)};})()`);
     check(`${label}: detail stack has swatches`, d.swatches >= 2 && d.minW > 0, `${d.swatches} swatches, min width ${d.minW}px`);
     check(`${label}: no NaN in detail`, !d.nan, d.text);
   };
@@ -1048,6 +1048,108 @@ try {
 
   // Clean up: close the panel.
   await evalIn(`window.__app.openFuncList && document.getElementById('funclist').classList.remove('on');`);
+  await evalIn(`window.__app.resetView();`);
+
+  // --- FG-050: interactive call stack — clicking ancestor rows navigates to them ---
+
+  // (1) Graph mode: select a deep frame, then click an ancestor row (data-node).
+  await evalIn(`window.__app.loadSample('samples/real-vertx.speedscope.json')`);
+  await poll(`window.__fv && /real-vertx/.test(document.getElementById('info').innerText||'') ? 1 : 0`);
+  await evalIn(`window.__app.setViewType('flame'); window.__app.resetView();`);
+  await poll(`window.__fv && window.__fv.mode==='graph' ? 1 : 0`);
+
+  // Pick and select a deep frame (depth >= 2) by clicking it on the canvas.
+  const deepPick = await evalIn(`(()=>{const v=window.__fv;const cv=document.getElementById('cv');const cr=cv.getBoundingClientRect();const ROW=22;const top=v.contentTop||0;const cand=v.boxes.filter(b=>b.depth>=2&&b.w>8&&b.node!=null).sort((a,b)=>b.depth-a.depth);return cand.length?{x:cr.left+cand[0].x+cand[0].w/2,y:cr.top+top+cand[0].depth*ROW+ROW/2,depth:cand[0].depth,node:cand[0].node}:null;})()`);
+  check('FG-050 graph: deep box found for selection', deepPick != null, `depth=${deepPick && deepPick.depth}`);
+  if (deepPick) {
+    await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: deepPick.x, y: deepPick.y, button: 'left', buttons: 1, clickCount: 1 }, sessionId);
+    await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: deepPick.x, y: deepPick.y, button: 'left', buttons: 0, clickCount: 1 }, sessionId);
+    await sleep(80);
+
+    // Verify the detail panel is open with stack rows carrying data-node.
+    const detailRows = await evalIn(`(()=>{const el=document.getElementById('detail');const rows=el.querySelectorAll('.dsr[data-node]');return {detailOn:el.classList.contains('on'),rowCount:rows.length,firstNode:rows.length?+rows[0].dataset.node:-1,lastNode:rows.length?+rows[rows.length-1].dataset.node:-1};})()`);
+    check('FG-050 graph: detail panel open with data-node rows', detailRows.detailOn && detailRows.rowCount >= 2, `detailOn=${detailRows.detailOn} rowCount=${detailRows.rowCount}`);
+
+    // Click the first row (deepest leaf = index 0 since rows are leaf→root order).
+    // We want to click an ANCESTOR: the last row is the root, pick a middle or last ancestor.
+    if (detailRows.rowCount >= 2) {
+      const origNode = await evalIn(`window.__fv.selectedNode`);
+      const origFunc = await evalIn(`window.__fv.selectedFunc`);
+
+      // Click a row with a different node than the current selectedNode (the last row = root).
+      const ancestorNode = await evalIn(`(()=>{const el=document.getElementById('detail');const rows=[...el.querySelectorAll('.dsr[data-node]')];const cur=window.__fv.selectedNode;const anc=rows.find(r=>+r.dataset.node!==cur);return anc?+anc.dataset.node:-1;})()`);
+      check('FG-050 graph: ancestor row found with different node', ancestorNode >= 0 && ancestorNode !== deepPick.node, `ancestorNode=${ancestorNode}`);
+
+      if (ancestorNode >= 0) {
+        // Simulate clicking that ancestor row directly.
+        await evalIn(`(()=>{const el=document.getElementById('detail');const row=el.querySelector('.dsr[data-node="${ancestorNode}"]');if(row)row.click();})()`);
+        await sleep(60);
+
+        const afterNav = await evalIn(`(()=>{const v=window.__fv;const det=document.getElementById('detail');return {selectedNode:v.selectedNode,selectedFunc:v.selectedFunc,detailOn:det.classList.contains('on')};})()`);
+        check('FG-050 graph: clicking ancestor row navigates selectedNode', afterNav.selectedNode === ancestorNode, `selectedNode: ${origNode} → ${afterNav.selectedNode} (expected ${ancestorNode})`);
+        check('FG-050 graph: selectedFunc matches ancestor node func', afterNav.selectedFunc === await evalIn(`window.__fv.ct.func[${ancestorNode}]`), `selectedFunc=${afterNav.selectedFunc}`);
+        check('FG-050 graph: detail panel stays open after navigation', afterNav.detailOn, `detailOn=${afterNav.detailOn}`);
+
+        // Verify All-Instances aggregate recomputes correctly after navigation.
+        const aiCheck = await evalIn(`(()=>{const v=window.__fv;const f=v.selectedFunc;const agg=v._funcAggregate(f);return {f,selfGt:agg.self>0||agg.total>0,total:agg.total,self:agg.self};})()`);
+        check('FG-050 graph: All-Instances aggregate valid after ancestor navigation', aiCheck.selfGt, `func=${aiCheck.f} total=${aiCheck.total} self=${aiCheck.self}`);
+      }
+    }
+  }
+
+  // (2) Sandwich mode: assert that clicking a stack row with data-func calls selectFunc (no throw).
+  await evalIn(`window.__app.resetView();`);
+  await poll(`window.__fv && window.__fv.mode==='graph' ? 1 : 0`);
+  await evalIn(`document.getElementById('m-sandwich').click()`);
+  await poll(`window.__fv && window.__fv.mode==='sandwich' ? 1 : 0`);
+
+  // Click a callee box to open the detail panel.
+  const sandBoxPick = await evalIn(`(()=>{const v=window.__fv;const cv=document.getElementById('cv');const cr=cv.getBoundingClientRect();const ROW=22;const b=v.calleeBoxes&&v.calleeBoxes.find(b=>b.depth>=1&&b.w>6&&b.node!=null);if(!b)return null;const y=cr.top+(v.calleeTop||(v.bandY+22))+(b.depth)*ROW+ROW/2-v.scrollY;return {x:cr.left+b.x+b.w/2,y};})()`);
+  if (sandBoxPick) {
+    await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: sandBoxPick.x, y: sandBoxPick.y, button: 'left', buttons: 1, clickCount: 1 }, sessionId);
+    await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: sandBoxPick.x, y: sandBoxPick.y, button: 'left', buttons: 0, clickCount: 1 }, sessionId);
+    await sleep(80);
+
+    const sandDetail = await evalIn(`(()=>{const el=document.getElementById('detail');const rows=el.querySelectorAll('.dsr[data-func]');return {detailOn:el.classList.contains('on'),rowCount:rows.length};})()`);
+    check('FG-050 sandwich: detail open with data-func rows', sandDetail.detailOn && sandDetail.rowCount >= 1, `detailOn=${sandDetail.detailOn} rowCount=${sandDetail.rowCount}`);
+
+    if (sandDetail.rowCount >= 1) {
+      // Click a data-func row and verify no error is thrown and selectedFunc is updated.
+      const sandNavResult = await evalIn(`(()=>{const el=document.getElementById('detail');const row=el.querySelector('.dsr[data-func]');if(!row)return {skip:true};const fi=+row.dataset.func;let threw=false;try{row.click();}catch(e){threw=true;}const v=window.__fv;return {fi,threw,selectedFunc:v.selectedFunc};})()`);
+      check('FG-050 sandwich: clicking data-func row does not throw', !sandNavResult.threw, `threw=${sandNavResult.threw}`);
+      check('FG-050 sandwich: clicking data-func row sets selectedFunc', sandNavResult.selectedFunc===sandNavResult.fi, `selectedFunc=${sandNavResult.selectedFunc} fi=${sandNavResult.fi}`);
+    }
+  } else {
+    check('FG-050 sandwich: callee box available for test', false, 'no callee box found — skipping sandwich click test');
+  }
+
+  // (3) Chart mode: assert that clicking a stack row with data-func degrades to function-select without throwing.
+  await evalIn(`window.__app.resetView();`);
+  await poll(`window.__fv && window.__fv.mode==='graph' ? 1 : 0`);
+  await evalIn(`document.getElementById('m-chart').click()`);
+  await poll(`window.__fv && window.__fv.mode==='chart' ? 1 : 0`);
+
+  // Click a chart box to open the detail panel.
+  const chartBoxPick = await evalIn(`(()=>{const v=window.__fv;const cv=document.getElementById('cv');const cr=cv.getBoundingClientRect();const ROW=22;const top=v.contentTop||0;const b=v.boxes&&v.boxes.find(b=>b.depth>=1&&b.w>8&&b.t0!=null);if(!b)return null;return {x:cr.left+b.x+b.w/2,y:cr.top+top+b.depth*ROW+ROW/2};})()`);
+  if (chartBoxPick) {
+    await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: chartBoxPick.x, y: chartBoxPick.y, button: 'left', buttons: 1, clickCount: 1 }, sessionId);
+    await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: chartBoxPick.x, y: chartBoxPick.y, button: 'left', buttons: 0, clickCount: 1 }, sessionId);
+    await sleep(80);
+
+    const chartDetail = await evalIn(`(()=>{const el=document.getElementById('detail');const rows=el.querySelectorAll('.dsr[data-func]');return {detailOn:el.classList.contains('on'),rowCount:rows.length};})()`);
+    check('FG-050 chart: detail open with data-func rows', chartDetail.detailOn && chartDetail.rowCount >= 1, `detailOn=${chartDetail.detailOn} rowCount=${chartDetail.rowCount}`);
+
+    if (chartDetail.rowCount >= 1) {
+      // Click a data-func row and verify it selects a function without throwing.
+      const chartNavResult = await evalIn(`(()=>{const el=document.getElementById('detail');const row=el.querySelector('.dsr[data-func]');if(!row)return {skip:true};const fi=+row.dataset.func;let threw=false;try{row.click();}catch(e){threw=true;}const v=window.__fv;return {fi,threw,selectedFunc:v.selectedFunc};})()`);
+      check('FG-050 chart: clicking data-func row does not throw', !chartNavResult.threw, `threw=${chartNavResult.threw}`);
+      check('FG-050 chart: clicking data-func row selects function', chartNavResult.selectedFunc === chartNavResult.fi, `selectedFunc=${chartNavResult.selectedFunc} fi=${chartNavResult.fi}`);
+    }
+  } else {
+    check('FG-050 chart: chart box available for test', false, 'no chart box found — skipping chart click test');
+  }
+
+  // Clean up after FG-050 tests.
   await evalIn(`window.__app.resetView();`);
 
 } catch (e: any) {

@@ -291,10 +291,13 @@ export class BaseView {
     this._selBox = box || null; // remembered so a theme swap can recolor the panel in place
     if (!box) { el.innerHTML = `<span style="color:${this.T.faint}">click a frame for details</span>`; return; }
     const f = box.func, name = funcName(this.p, f), gt = this.ct.grandTotal || 1;
-    const chip = (c) => `<span style="display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px;vertical-align:middle;background:${c}"></span>`;
+    const chip = (c) => `<span class="chip" style="background:${c}"></span>`;
     const pct = (v) => `${(100 * v / gt).toFixed(1)}%`;
     const fileI = this.p.funcTable.file[f], file = fileI >= 0 ? (this.p.stringTable[fileI] || '') : '';
-    const row = (ff) => `<div style="white-space:nowrap">${chip(colorForFunc(this.p, ff))}${this._esc(funcName(this.p, ff))}</div>`;
+    // FG-050: row helpers emit actionable divs carrying data-node or data-func for click navigation.
+    const rowStyle = 'white-space:nowrap;cursor:pointer;border-radius:3px;padding:1px 2px';
+    const rowNode = (ff, node) => `<div class="dsr" style="${rowStyle}" data-node="${node}">${chip(colorForFunc(this.p, ff))}${this._esc(funcName(this.p, ff))}</div>`;
+    const rowFunc = (ff) => `<div class="dsr" style="${rowStyle}" data-func="${ff}">${chip(colorForFunc(this.p, ff))}${this._esc(funcName(this.p, ff))}</div>`;
 
     // This Instance — per mode (chart boxes are time spans, not call-nodes)
     let tiHtml;
@@ -316,14 +319,15 @@ export class BaseView {
 
     // Stack trace (leaf → root). Graph walks the call-node prefix chain; chart reconstructs
     // from ancestor boxes at the clicked time; sandwich walks the local caller/callee table.
+    // FG-050: each row carries data-node (graph) or data-func (chart/sandwich) for navigation.
     let stack = '';
     if (this.mode === 'graph' && box.node != null) {
       const rows = []; let nn = box.node;
-      while (nn >= 0) { rows.push(row(this.ct.func[nn])); nn = this.ct.prefix[nn]; }
+      while (nn >= 0) { rows.push(rowNode(this.ct.func[nn], nn)); nn = this.ct.prefix[nn]; }
       stack = rows.join('');
     } else if (this.mode === 'chart' && this.boxes) {
       const cx = box.x + box.w / 2, rows = [];
-      for (let d = box.depth; d >= 0; d--) { const anc = this.boxes.find((bb) => bb.depth === d && cx >= bb.x && cx < bb.x + bb.w); if (anc) rows.push(row(anc.func)); }
+      for (let d = box.depth; d >= 0; d--) { const anc = this.boxes.find((bb) => bb.depth === d && cx >= bb.x && cx < bb.x + bb.w); if (anc) rows.push(rowFunc(anc.func)); }
       stack = rows.join('');
     } else if (this.mode === 'sandwich' && box.node != null && this.sandwich) {
       // Sandwich boxes index into the local caller/callee table (not this.ct).
@@ -331,14 +335,49 @@ export class BaseView {
       const isCaller = this.callerBoxes && this.callerBoxes.includes(box);
       const table = isCaller ? this.sandwich.callers : this.sandwich.callees;
       const rows = []; let nn = box.node;
-      while (nn >= 0) { rows.push(row(table.func[nn])); nn = table.prefix[nn]; }
+      while (nn >= 0) { rows.push(rowFunc(table.func[nn])); nn = table.prefix[nn]; }
       rows.reverse();
       stack = rows.join('');
     }
     el.innerHTML =
+      `<style>.dsr:hover{background:rgba(137,180,250,0.15)}</style>` +
       `<div class="dcol"><div class="dh">This Instance</div>${tiHtml}</div>` +
       (aiHtml ? `<div class="dcol"><div class="dh">All Instances</div>${aiHtml}</div>` : '') +
       `<div class="dcol dstack"><div class="dh">${this._esc(name)}${file ? ` <span style="color:${this.T.faint}">(${this._esc(file)})</span>` : ''}</div>${stack}</div>`;
+
+    // FG-050: wire click handlers on the stack rows for navigation.
+    // Plain click → selectNode (if data-node) or selectFunc (if data-func).
+    // Alt/Cmd click → focusBox for zoom (modifier click), degrading gracefully if unavailable.
+    el.querySelectorAll('.dsr').forEach((div) => {
+      div.addEventListener('click', (e) => {
+        const nodeAttr = div.dataset.node;
+        const funcAttr = div.dataset.func;
+        if (nodeAttr != null) {
+          const node = +nodeAttr;
+          if (e.altKey || e.metaKey) {
+            // modifier click: zoom/focus to that ancestor node
+            try { if (typeof this.focusBox === 'function') { this.focusBox({ node, func: this.ct.func[node] }); } } catch { /* focus unavailable — degrade silently */ }
+          } else {
+            this.selectNode(node);
+          }
+        } else if (funcAttr != null) {
+          const fi = +funcAttr;
+          // chart/sandwich: no stable node index — both plain and modifier click degrade to selectFunc
+          this.selectFunc(fi);
+        }
+        e.stopPropagation();
+      });
+    });
+  }
+  // FG-050: Select a specific call-node by index: set selectedNode + selectedFunc, update the
+  // detail panel, fire onSelect, and schedule a redraw. Sibling of selectFunc.
+  selectNode(node) {
+    this.selectedNode = node;
+    this.selectedFunc = this.ct.func[node];
+    const box = { func: this.ct.func[node], node, self: this.ct.self[node], total: this.ct.total[node] };
+    this._updateDetail(box);
+    if (this._opts.onSelect) this._opts.onSelect(box);
+    this._schedule();
   }
   // Select a function by index: outline all its instances, pick a representative call-node
   // (the one with the greatest self weight), open the detail slide-over, and fire onSelect.
