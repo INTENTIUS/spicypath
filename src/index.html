@@ -184,6 +184,7 @@
     const VIEWS = { flame: FlameView, radial: RadialView }; // view-type registry (FG-038/039)
     const SAMPLES = [['vert.x (real · timed · deep)', 'samples/real-vertx.speedscope.json'], ['Node CPU (timed · simple)', 'samples/node.cpuprofile'], ['pprof (multi-metric)', 'samples/multi-value.pprof'], ['5k samples (scale)', 'samples/scale-5000.cpuprofile']];
     let view, profile, mode = 'graph', fileLabel = '', viewType = 'flame', collapsed = true;
+    let _pendingHashState = null; // decoded hash state waiting to be applied on first loadProfile
 
     // FG-040: push the active theme's tokens into the chrome's CSS vars (canvas colors come
     // from src/theme.js + colors.js directly). applyTheme() also persists + recolors the view.
@@ -204,6 +205,132 @@
       if (view) view.refreshTheme();
     }
 
+    // FG-029: state-in-URL — encode/decode view state into location.hash.
+    // The encoded object: { vt, mode, wt, q, fp, win, src, srcSec }
+    //   vt      — viewType ('flame'|'radial')
+    //   mode    — 'graph'|'chart'|'sandwich'
+    //   wt      — weight type string
+    //   q       — search query string
+    //   fp      — focus path: root→leaf function-name array encoded as JSON (stable across rebuilds)
+    //   win     — minimap crop window [t0, t1] as JSON (null when not cropped)
+    //   src     — bundled sample path or live pprof URL (omitted for dropped local files)
+    //   srcSec  — seconds param for live pprof (only when src is a live URL)
+    let _hashWritePending = false;
+    function _encodeFocusPath(v) {
+      if (!v || v.focus == null) return null;
+      // find the box that corresponds to the focused call-node (focus is a node index in the ct)
+      // frameStack walks ct.prefix chain root→leaf for a box with box.node === v.focus
+      const node = v.focus;
+      // build a synthetic box-like object to call frameStack
+      const fakebox = { node };
+      try { return v.frameStack(fakebox); } catch { return null; }
+    }
+    function _writeHash() {
+      if (!profile) return;
+      const state = {};
+      state.vt = viewType;
+      state.mode = mode;
+      state.wt = wtSel.value;
+      if (searchEl.value) state.q = searchEl.value;
+      if (view) {
+        const fp = _encodeFocusPath(view);
+        if (fp && fp.length) state.fp = fp;
+        if (view.win) state.win = view.win;
+      }
+      // source addressing (Tier A): persist sample path or live URL
+      if (_hashSource) {
+        state.src = _hashSource.type === 'sample' ? _hashSource.path : _hashSource.url;
+        if (_hashSource.type === 'live') state.srcSec = _hashSource.seconds;
+      }
+      const encoded = btoa(JSON.stringify(state));
+      history.replaceState(null, '', '#' + encoded);
+    }
+    function _scheduleHashWrite() {
+      if (_hashWritePending) return;
+      _hashWritePending = true;
+      setTimeout(() => { _hashWritePending = false; _writeHash(); }, 80);
+    }
+    function _readHash() {
+      const h = location.hash.slice(1);
+      if (!h) return null;
+      try { return JSON.parse(atob(h)); } catch { return null; }
+    }
+    // _hashSource tracks what kind of source is active (for round-trip URLs).
+    // null = dropped local file (cannot be re-fetched)
+    let _hashSource = null; // { type: 'sample', path } | { type: 'live', url, seconds }
+    // _restoringHash = true while we're applying a decoded state so we don't overwrite it.
+    let _restoringHash = false;
+
+    // Re-resolve a stored root→leaf function-name path back to a call-node index.
+    // Returns null if no exact match is found (graceful ignore).
+    function _resolveFocusPath(fp) {
+      if (!fp || !fp.length || !view) return null;
+      const ct = view.ct, p = profile;
+      // Build a map from func name to all node indices that have that name
+      const n = ct.func.length;
+      // Walk the ct tree: find a node chain whose names (root→leaf) match fp exactly.
+      // Strategy: for each node, walk up the prefix chain collecting names, then compare.
+      for (let node = 0; node < n; node++) {
+        // Collect the name chain for this node (root→leaf)
+        const names = [];
+        let cur = node;
+        while (cur >= 0) {
+          const fname = ct.func[cur];
+          const nameIdx = p.funcTable.name[fname];
+          names.push(p.stringTable[nameIdx] || '');
+          cur = ct.prefix[cur];
+        }
+        names.reverse(); // now root→leaf
+        if (names.length === fp.length && names.every((nm, i) => nm === fp[i])) return node;
+      }
+      return null;
+    }
+
+    // Apply decoded hash state after a profile has been loaded.
+    // Call order: set weight → rebuild → setMode → re-resolve focus → setSearch
+    function _applyHashState(state) {
+      if (!state || !profile) return;
+      _restoringHash = true;
+      try {
+        // 1. weight
+        if (state.wt && profile.capabilities.weightTypes.includes(state.wt)) {
+          wtSel.value = state.wt;
+        }
+        // 2. viewType (before rebuild so V is right)
+        if (state.vt && VIEWS[state.vt]) viewType = state.vt;
+        // 3. rebuild with the chosen weight+viewType
+        rebuild();
+        applyCaps();
+        // 4. mode (after rebuild so the view exists)
+        const targetMode = (state.mode && ['graph', 'chart', 'sandwich'].includes(state.mode)) ? state.mode : 'graph';
+        const caps = (VIEWS[viewType].capabilities || { modes: ['graph', 'chart', 'sandwich'] }).modes;
+        const safeMode = caps.includes(targetMode) && (targetMode !== 'chart' || profile.capabilities.hasTiming) ? targetMode : 'graph';
+        setMode(safeMode);
+        // 5. re-resolve focus path
+        if (state.fp) {
+          const node = _resolveFocusPath(state.fp);
+          if (node != null && view) {
+            view.focus = node;
+            view.win = null;
+            view.relayout();
+          }
+        }
+        // 6. crop window (only if no focus was set — focus already clears win)
+        if (state.win && !state.fp && view) {
+          view.win = state.win;
+          view.relayout();
+        }
+        // 7. search
+        if (state.q) {
+          searchEl.value = state.q;
+          if (view) view.setSearch(state.q);
+        }
+        updateInfo();
+      } finally {
+        _restoringHash = false;
+      }
+    }
+
     function setMode(m) {
       if (m === 'chart' && !profile.capabilities.hasTiming) return;
       mode = m;
@@ -214,6 +341,7 @@
       if (view && view.mode === 'diff') rebuild(); else view.setMode(m); // leaving diff needs a fresh view from the original profile
       syncCollapseToken();
       updateInfo();
+      if (!_restoringHash) _scheduleHashWrite();
     }
     function rebuild() { if (view) view.dispose(); const V = VIEWS[viewType] || FlameView; view = new V(cv, profile, wtSel.value, mode, { onSelect: showDetail }); view.collapse = collapsed; view.setSearch(searchEl.value); window.__fv = view; /* test handle (test/browser.ts) */ }
     function applyCaps() { // disable mode buttons the active view type can't do
@@ -228,6 +356,7 @@
       const caps = (VIEWS[t].capabilities || { modes: ['graph', 'chart', 'sandwich'] }).modes;
       if (!caps.includes(mode)) mode = 'graph'; // coerce to a supported mode (also exits diff — rebuild is from the original profile)
       applyCaps(); rebuild(); setMode(mode); updateInfo();
+      if (!_restoringHash) _scheduleHashWrite();
     }
     function updateInfo() {
       stWeight.textContent = wtSel.value || '—';
@@ -249,6 +378,7 @@
       detail.innerHTML = ''; showDetail(false);
       document.getElementById('searchInfo').textContent = '';
       updateInfo();
+      if (!_restoringHash) _scheduleHashWrite();
     }
 
     function loadProfile(p, label) {
@@ -258,30 +388,45 @@
       wtSel.innerHTML = p.capabilities.weightTypes.map((t) => `<option>${t}</option>`).join('');
       wtSel.value = p.capabilities.weightTypes.includes('cpu_nanos') ? 'cpu_nanos' : p.capabilities.weightTypes[0];
       if (mode === 'chart' && !p.capabilities.hasTiming) mode = 'graph';
-      rebuild();
-      applyCaps();
-      setMode(mode);
-      updateInfo();
+      // Check if there's a hash state to restore (only on initial load, not on subsequent loads)
+      const pendingState = _pendingHashState;
+      _pendingHashState = null;
+      if (pendingState) {
+        _applyHashState(pendingState);
+      } else {
+        rebuild();
+        applyCaps();
+        setMode(mode);
+        updateInfo();
+      }
       showCoach();
+      if (!_restoringHash) _scheduleHashWrite();
     }
 
     async function loadSample(path) {
       const url = path; if (!url) return;
       const name = url.split('/').pop();
       info.textContent = `loading ${name}…`;
-      try { const b = new Uint8Array(await (await fetch(url)).arrayBuffer()); loadProfile(await ingestBytes(name, b), name); }
+      try {
+        const b = new Uint8Array(await (await fetch(url)).arrayBuffer());
+        _hashSource = { type: 'sample', path: url };
+        loadProfile(await ingestBytes(name, b), name);
+      }
       catch (e) { info.textContent = `drop a profile to begin (${e.message})`; }
     }
     async function openFile(f) {
       info.textContent = `loading ${f.name}…`;
-      try { loadProfile(await ingestFile(f), f.name); }
+      try {
+        _hashSource = null; // dropped file: not re-fetchable
+        loadProfile(await ingestFile(f), f.name);
+      }
       catch (e) { info.textContent = `failed to load ${f.name}: ${e.message}`; }
     }
 
     bGraph.onclick = () => setMode('graph');
     bChart.onclick = () => setMode('chart');
     bSand.onclick = () => setMode('sandwich');
-    searchEl.oninput = () => { if (view) view.setSearch(searchEl.value); };
+    searchEl.oninput = () => { if (view) view.setSearch(searchEl.value); if (!_restoringHash) _scheduleHashWrite(); };
     function download(name, content, type) { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([content], { type })); a.download = name; a.click(); URL.revokeObjectURL(a.href); }
     function doExport(kind) {
       if (!profile) return;
@@ -298,7 +443,7 @@
       el.style.opacity = applicable ? '' : '0.4';
       el.style.pointerEvents = applicable ? '' : 'none';
     }
-    function setWeight(wt) { if (!profile || wtSel.value === wt) return; wtSel.value = wt; rebuild(); setMode(mode); updateInfo(); }
+    function setWeight(wt) { if (!profile || wtSel.value === wt) return; wtSel.value = wt; rebuild(); setMode(mode); updateInfo(); if (!_restoringHash) _scheduleHashWrite(); }
     stWeight.onclick = () => { if (!profile) return; const opts = profile.capabilities.weightTypes; if (opts.length < 2) return; setWeight(opts[(opts.indexOf(wtSel.value) + 1) % opts.length]); };
     stDiff.onclick = () => resetView();
     stView.onclick = () => { const k = Object.keys(VIEWS); setViewType(k[(k.indexOf(viewType) + 1) % k.length]); };
@@ -332,6 +477,7 @@
         liveSource = { url, seconds };
         stLive.style.display = '';
         stLive.title = `live: ${url} — click to refetch`;
+        _hashSource = { type: 'live', url, seconds: +seconds };
         loadProfile(p, label);
       } catch (e) {
         info.textContent = `live fetch failed: ${e.message}`;
@@ -348,7 +494,7 @@
     window.__app = {
       setMode, setViewType, resetView, loadSample, setTheme: applyTheme, listThemes,
       fetchPprofUrl: (url, seconds = 5) => doFetchPprof(url, seconds),
-      setSearch: (q) => { searchEl.value = q; if (view) view.setSearch(q); },
+      setSearch: (q) => { searchEl.value = q; if (view) view.setSearch(q); if (!_restoringHash) _scheduleHashWrite(); },
       diffWith: async (path) => {
         const b = new Uint8Array(await (await fetch(path)).arrayBuffer());
         const B = await ingestBytes(path.split('/').pop(), b);
@@ -356,6 +502,10 @@
         searchEl.value = ''; document.getElementById('searchInfo').textContent = '';
         showDetail(false); info.textContent = `diff vs ${path.split('/').pop()}`; updateInfo();
       },
+      // FG-029: test handles for state-in-URL
+      readHash: _readHash,
+      applyHashState: _applyHashState,
+      getHashSource: () => _hashSource,
     };
 
     // FG-035: right-click frame context menu (calls the view's public action API)
@@ -380,7 +530,7 @@
       menu.replaceChildren();
       const h = document.createElement('div'); h.className = 'mh'; h.textContent = name; menu.appendChild(h);
       const add = (label, fn) => { const btn = document.createElement('button'); btn.textContent = label; btn.onclick = () => { hideMenu(); fn(); }; menu.appendChild(btn); };
-      add(view.mode === 'sandwich' ? 'Re-center here' : view.mode === 'chart' ? 'Zoom to span' : 'Focus subtree', () => { view.focusBox(b); updateInfo(); });
+      add(view.mode === 'sandwich' ? 'Re-center here' : view.mode === 'chart' ? 'Zoom to span' : 'Focus subtree', () => { view.focusBox(b); updateInfo(); _scheduleHashWrite(); });
       add('Sandwich this', () => sandwichThis(b.func));
       add('Search this frame', () => { const q = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); searchEl.value = q; view.setSearch(q); });
       add('Copy stack', () => { try { navigator.clipboard.writeText(view.frameStack(b).join(';')); } catch { /* ignore */ } });
@@ -392,6 +542,10 @@
     // so the opening Ctrl/right-click can't close it; clicks on menu items still register)
     document.addEventListener('mousedown', (e) => { if (!menu.contains(e.target)) hideMenu(); });
     window.addEventListener('blur', hideMenu);
+    // FG-029: capture zoom/crop changes from the view's own dblclick and minimap drag handlers
+    // by listening on the canvas with a low-priority debounced hash write (runs after the view).
+    cv.addEventListener('dblclick', () => { if (!_restoringHash) setTimeout(() => _scheduleHashWrite(), 0); });
+    cv.addEventListener('mouseup', () => { if (!_restoringHash && view && view.win !== undefined) setTimeout(() => _scheduleHashWrite(), 0); });
 
     // FG-036: command palette (⌘K) — every former-toolbar command, fuzzy-filtered
     const palette = document.getElementById('palette'), palInput = document.getElementById('pal-input'), palList = document.getElementById('pal-list');
@@ -498,7 +652,7 @@
       const inInput = /^(INPUT|SELECT|TEXTAREA)$/.test(document.activeElement?.tagName || '');
       if (e.key === '/' && !inInput) { e.preventDefault(); openSearch(); return; }
       if (e.key === '?' && !inInput) { e.preventDefault(); toggleHelp(); return; }
-      if (e.key === 'Escape') { hideMenu(); closePalette(); closeThemePicker(); closeConnect(); help.classList.remove('on'); if (pill.classList.contains('on') && !searchEl.value) closeSearch(); if (view && !inInput) { view.resetZoom(); showDetail(false); } return; }
+      if (e.key === 'Escape') { hideMenu(); closePalette(); closeThemePicker(); closeConnect(); help.classList.remove('on'); if (pill.classList.contains('on') && !searchEl.value) closeSearch(); if (view && !inInput) { view.resetZoom(); showDetail(false); _scheduleHashWrite(); } return; }
       if (inInput || !view || !profile) return;
       const caps = (VIEWS[viewType].capabilities || { modes: ['graph', 'chart', 'sandwich'] }).modes;
       if (e.key === '1' && caps.includes('chart')) setMode('chart');
@@ -514,7 +668,46 @@
     applyThemeVars(getTokens());
     stTheme.textContent = getThemeName();
     syncCollapseToken();
-    loadSample('samples/real-vertx.speedscope.json');
+
+    // FG-029: decode the hash and either restore a prior session or start fresh.
+    (async () => {
+      const hashState = _readHash();
+      if (hashState) {
+        // Apply any non-source view settings from the hash as pending state (applied after load).
+        _pendingHashState = hashState;
+        if (hashState.src) {
+          // Tier A: bundled sample or live pprof URL
+          const src = hashState.src;
+          const isLiveUrl = /^https?:\/\//.test(src) && !src.startsWith(location.origin);
+          // A relative/local sample path (starts with 'samples/') or same-origin absolute
+          const isSamplePath = !isLiveUrl;
+          if (isSamplePath) {
+            // Looks like a bundled sample path — try to fetch it
+            const knownPaths = SAMPLES.map(([, p]) => p);
+            if (knownPaths.includes(src) || src.startsWith('samples/')) {
+              _hashSource = { type: 'sample', path: src };
+              await loadSample(src);
+            } else {
+              // Unknown path — fall through to default, keep pending state for view settings
+              info.textContent = 'Shared link: sample not found — drop a profile to restore view settings';
+              _pendingHashState = hashState; // keep pending so view settings apply on next load
+              await loadSample('samples/real-vertx.speedscope.json');
+            }
+          } else {
+            // Live pprof URL
+            const seconds = hashState.srcSec || 5;
+            await doFetchPprof(src, seconds);
+          }
+        } else {
+          // No source in hash — must have been a dropped file. Degrade gracefully.
+          info.textContent = 'Shared link: original profile was a local file — drop a profile to restore view settings';
+          _pendingHashState = hashState; // keep pending so view settings apply on next load
+          await loadSample('samples/real-vertx.speedscope.json');
+        }
+      } else {
+        loadSample('samples/real-vertx.speedscope.json');
+      }
+    })();
   </script>
 </body>
 </html>

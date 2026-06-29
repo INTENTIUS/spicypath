@@ -554,6 +554,67 @@ try {
     mockSrv.close();
   }
 
+  // --- FG-029: state-in-URL — hash encodes view state and restores it ---
+  // Reset to a known state using a bundled sample (so _hashSource is set for round-trip).
+  await evalIn(`window.__app.loadSample('samples/node.cpuprofile')`);
+  await poll(`window.__fv && /node\.cpuprofile/.test(document.getElementById('info').innerText||'') ? 1 : 0`);
+  // 1. Drive state changes that should be reflected in the hash.
+  await evalIn(`window.__app.setMode('chart')`);
+  await poll(`window.__fv && window.__fv.mode==='chart' ? 1 : 0`);
+  await evalIn(`window.__app.setSearch('fib')`);
+  await sleep(200); // let the debounced hash write (80ms) flush
+  // 2. Read the hash — it must be non-empty and encode expected fields.
+  const hashEncoded = await evalIn(`location.hash`);
+  const hashDecoded = await evalIn(`(()=>{try{return JSON.parse(atob(location.hash.slice(1)));}catch{return null;}})()`);
+  check('FG-029: hash is written after state change', !!hashEncoded && hashEncoded.length > 1, `hash="${(hashEncoded||'').slice(0,50)}"`);
+  check('FG-029: hash encodes mode + search + bundled-sample source', hashDecoded && hashDecoded.mode === 'chart' && hashDecoded.q === 'fib' && !!hashDecoded.src && hashDecoded.src.includes('node.cpuprofile'), JSON.stringify(hashDecoded));
+  // 3. Simulate restore: reset state to graph/no-search, then apply the saved hash state back.
+  //    This exercises the same _applyHashState() path that runs on actual page reload.
+  await evalIn(`window.__app.resetView()`);
+  await poll(`window.__fv && window.__fv.mode==='graph' ? 1 : 0`);
+  const beforeRestore = await evalIn(`(()=>{return {mode:window.__fv.mode, search:document.getElementById('search').value};})()`);
+  // Re-apply the saved hash state via the exposed test handle.
+  await evalIn(`window.__app.applyHashState(${JSON.stringify(hashDecoded)})`);
+  await sleep(150); // let relayout and search settle
+  const afterRestore = await evalIn(`(()=>{const f=window.__fv;const q=document.getElementById('search').value;return {mode:f?f.mode:null, search:q, matchedFuncs:!!f.matchedFuncs};})()`);
+  check('FG-029: mode is restored by applyHashState', afterRestore.mode === 'chart', `before=${beforeRestore.mode} → after=${afterRestore.mode}`);
+  check('FG-029: search is restored by applyHashState', afterRestore.search === 'fib' && afterRestore.matchedFuncs, `search="${afterRestore.search}" matchedFuncs=${afterRestore.matchedFuncs}`);
+  // 4. Verify the hash source is a bundled sample (Tier A addressability).
+  const hashSrc = await evalIn(`window.__app.getHashSource()`);
+  check('FG-029: bundled-sample source is tracked (Tier A)', !!hashSrc && hashSrc.type === 'sample' && hashSrc.path.includes('node.cpuprofile'), JSON.stringify(hashSrc));
+  // 5. Weight change also updates the hash.
+  await evalIn(`document.getElementById('st-weight').click()`); // cycle weight (node.cpuprofile only has cpu_nanos so this is a no-op, but the write path is still exercised)
+  await sleep(200);
+  const wtCheck = await evalIn(`(()=>{try{const h=JSON.parse(atob(location.hash.slice(1)));return h.wt===window.__fv.weightType;}catch{return false;}})()`);
+  check('FG-029: hash wt field matches active weight type', wtCheck === true, `hash.wt matches view.weightType: ${wtCheck}`);
+  // 6. View-type change updates the hash.
+  await evalIn(`window.__app.setViewType('radial')`);
+  await poll(`window.__fv && window.__fv.constructor.name==='RadialView' ? 1 : 0`);
+  await sleep(200);
+  const hashVT = await evalIn(`(()=>{try{return JSON.parse(atob(location.hash.slice(1)));}catch{return null;}})()`);
+  check('FG-029: viewType change updates the hash', hashVT && hashVT.vt === 'radial', `hash.vt="${hashVT && hashVT.vt}"`);
+  // Restore flame view for subsequent tests.
+  await evalIn(`window.__app.setViewType('flame')`);
+  await poll(`window.__fv && window.__fv.constructor.name==='FlameView' ? 1 : 0`);
+
+  // 7. Focus/zoom round-trip — the stable-key path (focus is a rebuild-volatile node INDEX,
+  //    stored as a root→leaf name path and re-resolved after rebuild). The riskiest restore.
+  await evalIn(`window.__app.setMode('graph')`);
+  await poll(`window.__fv && window.__fv.mode==='graph' ? 1 : 0`);
+  // Focus a real subtree node (a box with a node index, below the root).
+  await evalIn(`(()=>{const f=window.__fv;const b=f.boxes.find(x=>x.node!=null && x.depth>0);if(b)f.focusBox(b);})()`);
+  await sleep(200); // debounced hash write
+  const savedFocusState = await evalIn(`(()=>{try{return JSON.parse(atob(location.hash.slice(1)));}catch{return null;}})()`);
+  check('FG-029: focus path is encoded into the hash', !!(savedFocusState && Array.isArray(savedFocusState.fp) && savedFocusState.fp.length > 0), `fp=${JSON.stringify(savedFocusState && savedFocusState.fp)}`);
+  // Clear focus, then restore from the saved state — focus must re-resolve to the same stack.
+  await evalIn(`window.__app.resetView()`);
+  await poll(`window.__fv && window.__fv.focus==null ? 1 : 0`);
+  await evalIn(`window.__app.applyHashState(${JSON.stringify(savedFocusState)})`);
+  await sleep(200);
+  const restoredFocus = await evalIn(`(()=>{const f=window.__fv;if(f.focus==null)return {ok:false,why:'focus null'};const names=f.frameStack({node:f.focus});return {ok:true,names};})()`);
+  check('FG-029: focus re-resolves to the same stack after rebuild', !!(restoredFocus.ok && savedFocusState && JSON.stringify(restoredFocus.names) === JSON.stringify(savedFocusState.fp)), JSON.stringify(restoredFocus));
+  await evalIn(`window.__app.resetView()`); // leave a clean state
+
 } catch (e: any) {
   failures++;
   console.log('  ✗ harness error —', e?.message || e);

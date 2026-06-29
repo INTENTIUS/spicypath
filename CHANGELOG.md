@@ -87,6 +87,12 @@ semantic color · labels-where-fit · path highlight · auto-collapse) landed he
 The differentiating layer — making spicypath not file-only. Remaining M4 work is tracked in
 [GitHub issues](https://github.com/INTENTIUS/spicypath/issues?q=is%3Aopen+milestone%3AM4).
 
+- FG-029 Persisted shareable links — view state (view type · mode · weight · search · zoom/
+  focal · crop) is encoded into `location.hash` (`history.replaceState`, debounced) and
+  restored on load. Focus is stored as a stable root→leaf name path and re-resolved after
+  rebuild, not as a volatile node index. Tier A source addressing: links to a bundled sample
+  or a live `/debug/pprof` URL reopen the same data; a link whose source was a dropped local
+  file degrades with a clear status message. No upload — the hash holds only state + a path/URL.
 - FG-041 Gecko ingestion — `src/parse-gecko.js` reads the Firefox Profiler / `samply`
   processed-profile JSON (`meta.version` 5), handling both the raw `{schema, data}` and
   processed column-array table forms; per-sample timing is preserved (`hasTiming`, ms axis),

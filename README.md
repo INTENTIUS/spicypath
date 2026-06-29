@@ -37,6 +37,9 @@ to open your own; `.gz` is decompressed automatically.
 - **Zoom** by double-clicking a frame or span; **Esc** resets.
 - **Diff** two profiles with *compare* — red marks regressions, blue improvements.
 - **Export** the current profile as `.speedscope.json`, `.folded`, or an `.svg` snapshot.
+- **Share** a view — the URL captures view, mode, weight, search, and zoom; links to a bundled
+  sample or a live `/debug/pprof` endpoint reopen the same profile (dropped local files can't be
+  re-fetched, but the view settings still restore).
 
 ## Documentation
 
