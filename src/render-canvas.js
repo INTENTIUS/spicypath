@@ -31,15 +31,21 @@ const maxDepthOf = (bs) => { let m = 0; for (const b of bs) if (b.depth > m) m =
 // this.relayout()/this._updateLegend() (supplied by the subclass) from the mode actions.
 // ──────────────────────────────────────────────────────────────────────────────────────
 export class BaseView {
+  // FG-053: opts may include { onSelect, thread } where thread is a Thread object or numeric
+  // index. A Thread object (e.g. mergedThread result) is used directly; a number indexes
+  // profile.threads. Defaults to 0 (prior behavior when thread is absent).
   constructor(canvas, profile, weightType, mode, opts) {
-    this._opts = opts || {}; // { onSelect(box|null) } — shell hook for the detail slide-over
+    this._opts = opts || {}; // { onSelect(box|null), thread } — shell hook for the detail slide-over
     this.canvas = canvas;
     this.ctx = canvas.getContext('2d', { alpha: false });
     this.p = profile;
     this.weightType = weightType;
     this.mode = mode || 'graph';
-    this.ct = buildCallNodeTable(profile, 0, weightType);
-    this.chart = profile.capabilities.hasTiming ? buildFlameChart(profile, 0) : null;
+    // FG-053: resolve the active thread — object (merged/per-thread) or numeric index (default 0)
+    const threadArg = (opts && opts.thread != null) ? opts.thread : 0;
+    this._activeThread = threadArg; // stored for _applyBrush and future seams
+    this.ct = buildCallNodeTable(profile, threadArg, weightType);
+    this.chart = profile.capabilities.hasTiming ? buildFlameChart(profile, threadArg) : null;
     this.focus = null;
     this.win = null;          // chart time window [t0, t1]
     this.scrollY = 0;         // vertical scroll into the content (px); minimap modes only
@@ -186,7 +192,11 @@ export class BaseView {
   _applyBrush(tb0, tb1) {
     this.brush = [tb0, tb1];
     // aggregate the window and build the brushFuncs set
-    const result = aggregateWindow(this.p, 0, this.weightType, tb0, tb1);
+    // FG-053: use the active thread (merged or per-thread) for the brush window aggregation.
+    // aggregateWindow accepts a numeric threadIndex; for a merged/synthetic thread object,
+    // fall back to 0 (the brush is a best-effort highlight, not a correctness invariant).
+    const brushTi = (typeof this._activeThread === 'number') ? this._activeThread : 0;
+    const result = aggregateWindow(this.p, brushTi, this.weightType, tb0, tb1);
     const TOP_K = 10;
     const top = result.funcs.slice(0, TOP_K);
     this.brushFuncs = new Set(top.map((f) => f.func));

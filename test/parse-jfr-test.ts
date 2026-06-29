@@ -6,6 +6,7 @@
 import { execSync, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { checkInvariants } from '../src/model.js';
+import { mergedThread } from '../src/callnode.js';
 import { parseJfr } from './parse-jfr.ts';
 import { ingestBytes } from '../src/ingest.js';
 
@@ -147,18 +148,39 @@ assert(
 );
 console.log(`ok    weightTypes = ${JSON.stringify(profile.capabilities.weightTypes)}`);
 
-// ---- (e2) FG-052: dimensions are UNIFIED in one stream, reachable by the renderer ----------
-// The renderer only shows threads[0]; the dimensions must NOT be split across threads (else the
-// alloc flame is stranded behind a thread the UI never shows). Assert one thread carrying BOTH
-// non-zero CPU and non-zero alloc weights over the same sample stream.
+// ---- (e2) FG-052/FG-053: merged "all threads" view carries BOTH CPU and alloc dimensions ----
+// FG-053: the parser now emits N Thread objects (one per real JVM thread). The "all threads"
+// merged view (mergedThread()) reproduces FG-052's unified stream so both CPU and alloc
+// dimensions are reachable in the default merged view. Assert:
+//   (a) threads.length > 1 (multi-thread workload from FG-053 JfrWorkload.java)
+//   (b) the merged view carries both non-zero CPU and non-zero alloc weights
+//   (c) selecting a single worker thread yields a proper subset (only that thread's samples)
 {
-  assert(profile.threads.length === 1, `expected 1 unified thread, got ${profile.threads.length} (dimensions split across threads → alloc unreachable in the app)`);
-  const w = profile.threads[0].samples.weightsByType;
-  const cpuKey = w['samples'] ? 'samples' : 'cpu_nanos';
-  const cpuNz = (w[cpuKey] || []).filter((x: number) => x > 0).length;
-  const allocNz = (w['alloc_bytes'] || []).filter((x: number) => x > 0).length;
-  assert(cpuNz > 0 && allocNz > 0, `threads[0] must carry both dimensions: cpuNz=${cpuNz} allocNz=${allocNz}`);
-  console.log(`ok    unified thread: ${profile.threads[0].samples.stack.length} samples, cpu ${cpuNz}nz + alloc ${allocNz}nz (reachable in the app)`);
+  // (a) multi-thread: the workload spawns worker-1 + worker-2 + main → at least 2 distinct threads
+  assert(profile.threads.length > 1, `expected >1 threads (FG-053 multi-thread workload), got ${profile.threads.length}`);
+  console.log(`ok    threads.length = ${profile.threads.length} (${profile.threads.map((t: any) => t.name).join(', ')})`);
+
+  // (b) merged view carries both CPU and alloc (FG-052 reachability invariant preserved)
+  const merged = mergedThread(profile);
+  assert(merged !== null, 'mergedThread() returned null');
+  const mw = merged!.samples.weightsByType;
+  const cpuKey = mw['samples'] ? 'samples' : 'cpu_nanos';
+  const cpuNz = (mw[cpuKey] || []).filter((x: number) => x > 0).length;
+  const allocNz = (mw['alloc_bytes'] || []).filter((x: number) => x > 0).length;
+  assert(cpuNz > 0 && allocNz > 0,
+    `merged thread must carry both dimensions: cpuNz=${cpuNz} allocNz=${allocNz}`);
+  console.log(`ok    merged thread: ${merged!.samples.stack.length} samples, cpu ${cpuNz}nz + alloc ${allocNz}nz (FG-052 reachability preserved via merge)`);
+
+  // (c) per-thread selection: a single thread's sample count < merged total (it's a subset)
+  const mergedTotal = merged!.samples.stack.length;
+  for (const t of profile.threads) {
+    assert(t.samples.stack.length < mergedTotal,
+      `thread "${t.name}" has ${t.samples.stack.length} >= merged ${mergedTotal} — not a proper subset`);
+  }
+  console.log(`ok    per-thread counts are strict subsets of merged total (${mergedTotal})`);
+
+  // (d) setThread('all') via API: the merged view total >= any individual thread total
+  // (verified structurally above; the UI API test is in test/browser.ts)
 }
 
 // ---- (f) FG-052: alloc_bytes column — hot allocator is allocHot -----------
@@ -203,6 +225,23 @@ if (profile.capabilities.weightTypes.includes('park_nanos')) {
   console.log(`ok    park_nanos present (${parkLeaves.length} distinct leaf(s))`);
 } else {
   console.log('note  park_nanos not present in this recording (ok — workload does not park)');
+}
+
+// ---- (h2) FG-053: per-thread selection yields a sample subset ----------------------------
+
+import { buildCallNodeTable } from '../src/callnode.js';
+
+{
+  // Build a CT from the merged view and one from a single thread; merged total >= per-thread.
+  const merged = mergedThread(profile)!;
+  const wt = profile.capabilities.weightTypes.includes('alloc_bytes') ? 'alloc_bytes' : profile.capabilities.weightTypes[0];
+  const mergedCt = buildCallNodeTable(profile, merged, wt);
+  for (let i = 0; i < profile.threads.length; i++) {
+    const ct = buildCallNodeTable(profile, i, wt);
+    assert(mergedCt.grandTotal >= ct.grandTotal,
+      `merged grandTotal ${mergedCt.grandTotal} < thread[${i}] ${ct.grandTotal} — merge is wrong`);
+  }
+  console.log(`ok    merged grandTotal (${mergedCt.grandTotal}) >= all per-thread totals`);
 }
 
 // ---- (i) ingest path: the file-open route (drop / picker) detects JFR by magic ----------

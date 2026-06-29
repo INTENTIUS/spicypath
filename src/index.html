@@ -194,6 +194,7 @@
     </span>
     <span class="tok" id="st-viewtype" title="view type — click to cycle (flame → radial → graph)">flame</span>
     <span class="tok" id="st-weight" title="weight type — click to cycle">—</span>
+    <span class="tok" id="st-thread" title="thread selector — click to cycle" style="display:none">all threads</span>
     <span class="tok" id="st-diff" title="diff vs baseline — click to exit" style="display:none">diff</span>
     <span id="info"></span>
     <span class="tok" id="st-live" title="live pprof — click to refetch">live</span>
@@ -306,7 +307,7 @@
     import { buildDiff } from './diff.js';
     import { renderSVG } from './render-svg.js';
     import { layout } from './layout.js';
-    import { buildCallNodeTable } from './callnode.js';
+    import { buildCallNodeTable, mergedThread } from './callnode.js';
     import { setTheme, listThemes, getThemeName, getTokens, luminance } from './theme.js';
     import { debugPprofAdapter } from './fetch-pprof.js';
     import { pyroscopeAdapter } from './source-pyroscope.js';
@@ -513,6 +514,9 @@
     const VIEWS = { flame: FlameView, radial: RadialView, graph: GraphView }; // view-type registry (FG-038/039/051)
     const SAMPLES = [['vert.x (real · timed · deep)', 'samples/real-vertx.speedscope.json'], ['Node CPU (timed · simple)', 'samples/node.cpuprofile'], ['pprof (multi-metric)', 'samples/multi-value.pprof'], ['heap (alloc bytes/objects)', 'samples/alloc-heap.pprof'], ['5k samples (scale)', 'samples/scale-5000.cpuprofile']];
     let view, profile, mode = 'graph', fileLabel = '', viewType = 'flame', collapsed = true;
+    // FG-053: active thread selection. 'all' means the merged view (default when threads>1);
+    // a number means that real thread by index. Single-thread profiles always use index 0.
+    let activeThread = 'all';
     let _pendingHashState = null; // decoded hash state waiting to be applied on first loadProfile
 
     // FG-040: push the active theme's tokens into the chrome's CSS vars (canvas colors come
@@ -673,13 +677,77 @@
       updateInfo();
       if (!_restoringHash) _scheduleHashWrite();
     }
-    function rebuild() { if (view) view.dispose(); const V = VIEWS[viewType] || FlameView; view = new V(cv, profile, wtSel.value, mode, { onSelect: showDetail }); view.collapse = collapsed; view.setSearch(searchEl.value); window.__fv = view; /* test handle (test/browser.ts) */ }
+    // FG-053: resolve the active thread arg to pass into the view constructor.
+    // 'all' → mergedThread (the union); a number → that specific thread; single-thread → 0.
+    function _resolveThreadArg() {
+      if (!profile) return 0;
+      const n = profile.threads.length;
+      if (n <= 1) return 0; // single-thread: always thread 0, no selector
+      if (activeThread === 'all') return mergedThread(profile);
+      const idx = typeof activeThread === 'number' ? activeThread : 0;
+      return (idx >= 0 && idx < n) ? idx : 0;
+    }
+    function rebuild() { if (view) view.dispose(); const V = VIEWS[viewType] || FlameView; const thread = _resolveThreadArg(); view = new V(cv, profile, wtSel.value, mode, { onSelect: showDetail, thread }); view.collapse = collapsed; view.setSearch(searchEl.value); window.__fv = view; /* test handle (test/browser.ts) */ updateThreadToken(); }
     function applyCaps() { // disable mode buttons the active view type can't do
       const caps = (VIEWS[viewType].capabilities || { modes: ['graph', 'chart', 'sandwich'] }).modes;
       bChart.disabled = !caps.includes('chart') || !(profile && profile.capabilities.hasTiming);
       bSand.disabled = !caps.includes('sandwich');
       stView.textContent = viewType;
     }
+
+    // FG-053: thread selector token — shown only when threads.length > 1.
+    // Per "hide controls, never state": the token is visible only when meaningful.
+    const stThread = document.getElementById('st-thread');
+    function updateThreadToken() {
+      if (!profile || profile.threads.length <= 1) { stThread.style.display = 'none'; return; }
+      stThread.style.display = '';
+      if (activeThread === 'all') {
+        const total = profile.threads.reduce((s, t) => s + t.samples.stack.length, 0);
+        stThread.textContent = `all threads (${total})`;
+        stThread.title = 'thread: all (merged) — click to cycle';
+      } else {
+        const idx = typeof activeThread === 'number' ? activeThread : 0;
+        const t = profile.threads[idx];
+        const cnt = t ? t.samples.stack.length : 0;
+        const nm = t ? t.name : `thread ${idx}`;
+        stThread.textContent = `${nm} (${cnt})`;
+        stThread.title = `thread: ${nm} — click to cycle`;
+      }
+    }
+
+    // FG-053: set active thread and rebuild. indexOrAll: 'all' or a numeric index.
+    function setThread(indexOrAll) {
+      if (!profile || profile.threads.length <= 1) return; // no-op for single-thread
+      if (indexOrAll === 'all') {
+        activeThread = 'all';
+      } else {
+        const idx = typeof indexOrAll === 'number' ? indexOrAll : parseInt(indexOrAll, 10);
+        if (isNaN(idx) || idx < 0 || idx >= profile.threads.length) return;
+        activeThread = idx;
+      }
+      rebuild(); applyCaps(); setMode(mode); updateInfo();
+    }
+
+    // FG-053: list threads for the active profile (test hook + ⌘K entries).
+    function listThreads() {
+      if (!profile) return [];
+      const result = [{ index: 'all', name: 'all threads', count: profile.threads.reduce((s, t) => s + t.samples.stack.length, 0) }];
+      for (let i = 0; i < profile.threads.length; i++) {
+        result.push({ index: i, name: profile.threads[i].name, count: profile.threads[i].samples.stack.length });
+      }
+      return result;
+    }
+
+    stThread.onclick = () => {
+      if (!profile || profile.threads.length <= 1) return;
+      // Cycle: all → 0 → 1 → … → (N-1) → all
+      if (activeThread === 'all') {
+        setThread(0);
+      } else {
+        const next = (typeof activeThread === 'number' ? activeThread : -1) + 1;
+        setThread(next >= profile.threads.length ? 'all' : next);
+      }
+    };
     function setViewType(t) {
       if (!VIEWS[t] || !profile) return;
       viewType = t;
@@ -694,7 +762,18 @@
       stDiff.style.display = isDiff ? '' : 'none';
       if (!view || !profile || isDiff) return; // diff keeps its own "diff vs …" label (set on compare)
       const t = profile.capabilities.hasTiming ? 'timed' : 'aggregated';
-      info.textContent = `${fileLabel} · ${t} · ${profile.stackTable.frame.length} nodes · ${view.totalLabel()} total`;
+      // FG-053: show the active thread name when in a per-thread view.
+      let threadPart = '';
+      if (profile.threads.length > 1) {
+        if (activeThread === 'all') {
+          threadPart = ' · all threads';
+        } else {
+          const idx = typeof activeThread === 'number' ? activeThread : 0;
+          const thr = profile.threads[idx];
+          if (thr) threadPart = ` · ${thr.name}`;
+        }
+      }
+      info.textContent = `${fileLabel} · ${t} · ${profile.stackTable.frame.length} nodes${threadPart} · ${view.totalLabel()} total`;
     }
     function resetView() {
       if (!profile) return;
@@ -702,6 +781,8 @@
       searchEl.value = '';
       collapsed = true; syncCollapseToken();
       wtSel.value = profile.capabilities.weightTypes.includes('cpu_nanos') ? 'cpu_nanos' : profile.capabilities.weightTypes[0];
+      // FG-053: reset thread to 'all' (merged) when threads.length > 1, else 0.
+      activeThread = profile.threads.length > 1 ? 'all' : 0;
       rebuild();
       applyCaps(); // keep mode-button enabled-state in sync with the active view type
       setMode('graph');
@@ -722,6 +803,8 @@
       wtSel.innerHTML = p.capabilities.weightTypes.map((t) => `<option>${t}</option>`).join('');
       wtSel.value = p.capabilities.weightTypes.includes('cpu_nanos') ? 'cpu_nanos' : p.capabilities.weightTypes[0];
       if (mode === 'chart' && !p.capabilities.hasTiming) mode = 'graph';
+      // FG-053: default to 'all threads' (merged) when threads.length > 1 so nothing is hidden.
+      activeThread = profile.threads.length > 1 ? 'all' : 0;
       // Check if there's a hash state to restore (only on initial load, not on subsequent loads)
       const pendingState = _pendingHashState;
       _pendingHashState = null;
@@ -791,7 +874,7 @@
       const wt = wtSel.value;
       if (kind === 'speedscope') download('profile.speedscope.json', exportSpeedscope(profile, wt), 'application/json');
       else if (kind === 'folded') download('profile.folded', exportFolded(profile, wt), 'text/plain');
-      else if (kind === 'svg') { const ct = buildCallNodeTable(profile, 0, wt); const boxes = layout(ct, { width: 1400, minWidth: 0.5, collapse: true }); download('profile.svg', renderSVG(boxes, profile, { width: 1400, title: 'flame graph export' }), 'image/svg+xml'); }
+      else if (kind === 'svg') { const ct = buildCallNodeTable(profile, _resolveThreadArg(), wt); const boxes = layout(ct, { width: 1400, minWidth: 0.5, collapse: true }); download('profile.svg', renderSVG(boxes, profile, { width: 1400, title: 'flame graph export' }), 'image/svg+xml'); }
       else if (kind === 'markdown') download('profile.md', exportMarkdown(profile, wt), 'text/markdown');
     }
     function toggleCollapse() { collapsed = !collapsed; if (view) view.setCollapse(collapsed); syncCollapseToken(); }
@@ -978,6 +1061,8 @@
     // test hook (test/browser.ts fuzzer) — drives transitions without file dialogs
     window.__app = {
       setMode, setViewType, resetView, loadSample, setTheme: applyTheme, listThemes,
+      // FG-053: thread selector API
+      setThread, listThreads,
       fetchPprofUrl: (url, seconds = 5) => doFetchPprof(url, seconds),
       openUrl: (url) => doOpenUrl(url), // FG-043
       openUrlDialog,
@@ -1206,6 +1291,14 @@
       c.push(['View: Radial (sunburst)', () => setViewType('radial')]);
       c.push(['View: Call graph', () => setViewType('graph')]);
       if (profile) for (const wt of profile.capabilities.weightTypes) c.push(['Weight: ' + wt, () => setWeight(wt)]);
+      // FG-053: thread selector entries (only when profile has > 1 thread)
+      if (profile && profile.threads.length > 1) {
+        c.push(['Thread: all threads', () => setThread('all')]);
+        for (let i = 0; i < profile.threads.length; i++) {
+          const thr = profile.threads[i];
+          c.push([`Thread: ${thr.name} (${thr.samples.stack.length})`, () => setThread(i)]);
+        }
+      }
       if (profile) for (const u of ['nanoseconds', 'microseconds', 'milliseconds', 'seconds', 'bytes', 'samples']) c.push(['Weight unit: ' + u, () => relabelWeight(u)]);
       c.push([(collapsed ? 'Disable' : 'Enable') + ' collapse', () => toggleCollapse()]);
       c.push(['Export: speedscope JSON', () => doExport('speedscope')]);

@@ -10,6 +10,15 @@ linkable — the entries record *what* shipped and *why*, not the original commi
 
 ## Enhancements (post-M4)
 
+- FG-053 Thread selector — multi-thread recordings can be sliced by thread. A new
+  `mergedThread(profile)` (`src/callnode.js`) concatenates every thread's samples over the shared
+  interned tables; `buildCallNodeTable`/`buildFlameChart` accept a Thread object or an index (the
+  seam), and `BaseView` takes an `opts.thread`. A multi-thread profile **defaults to the merged
+  "all threads" view** (nothing hidden), with a status-strip token + ⌘K entries to narrow to a
+  single thread; single-thread profiles are unchanged (no token). This also completes FG-052: the
+  JFR parser now resolves the real `eventThread` for allocation/lock/wait events and groups by real
+  thread (no hardcoded dimension buckets), with the merged default preserving the all-dimensions
+  reachability.
 - FG-052 JFR allocation/lock/wait events — `src/parse-jfr.js` (which read only `jdk.ExecutionSample`)
   now also decodes `jdk.ObjectAllocationSample`/`...InNewTLAB`/`...OutsideTLAB` (bytes →
   `alloc_bytes`), `jdk.JavaMonitorEnter`/`Wait`, and `jdk.ThreadPark` (duration → `monitor_nanos`/

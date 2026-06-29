@@ -10,8 +10,9 @@ function framesOf(p, s, cache) {
 }
 
 // Returns { spans:[{frame, depth, x0, x1}], start, end, maxDepth } in the time domain.
+// FG-053: threadIndex may be a number or a Thread object (e.g. mergedThread result).
 export function buildFlameChart(p, threadIndex) {
-  const t = p.threads[threadIndex];
+  const t = (typeof threadIndex === 'object' && threadIndex !== null) ? threadIndex : p.threads[threadIndex];
   const stacks = t.samples.stack, time = t.samples.time;
   if (!time || stacks.length === 0) return null;
   const n = stacks.length;

@@ -440,6 +440,137 @@ try {
   }
   check(`fuzz: ${ops.length} mode×view×diff×search transitions hold invariants`, fuzzFails === 0 && pageErrors.length === 0, `${fuzzFails} invariant fails, ${pageErrors.length} page error(s)${pageErrors.length ? ': ' + pageErrors[0] : ''}`);
 
+  // --- FG-053: thread selector + all-threads merge ---
+  // Build a synthetic 2-thread profile in the browser via window.__app, assert the selector
+  // appears, listThreads() lists >1 + 'all', setThread(0) changes totals vs 'all', and
+  // 'all' total >= any single thread. Then load a single-thread profile and assert no token.
+  {
+    // Inject a 2-thread profile programmatically via __app.loadProfile (if available), or
+    // via __fv.p mutation. We use a cleaner approach: call __app.setThread / listThreads
+    // against the real node.cpuprofile (single thread) first, then build a synthetic multi-
+    // thread profile to exercise the full selector path.
+    await evalIn(`window.__app.loadSample('samples/node.cpuprofile')`);
+    await poll(`window.__fv && /node\\.cpuprofile/.test(document.getElementById('info').innerText||'') ? 1 : 0`);
+
+    // Single-thread profile: thread token must be hidden, listThreads must still work
+    const singleTok = await evalIn(`(()=>{const el=document.getElementById('st-thread');return {display:getComputedStyle(el).display,text:el.innerText||''};   })()`);
+    check('FG-053: single-thread profile — thread token hidden', singleTok.display === 'none', `display=${singleTok.display}`);
+    const singleList = await evalIn(`window.__app.listThreads ? window.__app.listThreads() : null`);
+    check('FG-053: listThreads() returns an array (single-thread)', Array.isArray(singleList), `listThreads=${JSON.stringify(singleList && singleList.slice(0,2))}`);
+
+    // Build a synthetic 2-thread profile in the page's module scope via eval.
+    // We clone the current profile (same tables), create 2 threads with disjoint sample sets,
+    // then call the internal loadProfile path via __app hooks.
+    const injected = await evalIn(`(()=>{
+      try {
+        // Grab the real single-thread profile as a base for tables.
+        const base = window.__fv.p;
+        // Split the existing samples into two halves (thread 0 gets even indices, 1 gets odd).
+        const t0 = base.threads[0];
+        const stacks = t0.samples.stack;
+        const wt = Object.keys(t0.samples.weightsByType)[0] || 'samples';
+        const col = t0.samples.weightsByType[wt] || [];
+        const hasTiming = base.capabilities.hasTiming;
+        const time = hasTiming ? t0.samples.time : null;
+
+        const s0={stack:[],wt:[]}, s1={stack:[],wt:[]}, t_0=[], t_1=[];
+        for(let i=0;i<stacks.length;i++) {
+          if(i%2===0){s0.stack.push(stacks[i]);s0.wt.push(col[i]||0);if(hasTiming&&time)t_0.push(time[i]);}
+          else{s1.stack.push(stacks[i]);s1.wt.push(col[i]||0);if(hasTiming&&time)t_1.push(time[i]);}
+        }
+        if(s0.stack.length===0||s1.stack.length===0) return {ok:false,why:'too few samples to split'};
+
+        const wbt0={}, wbt1={};
+        wbt0[wt]=s0.wt; wbt1[wt]=s1.wt;
+        const thread0={name:'worker-0',samples:{stack:s0.stack,weightsByType:wbt0,...(hasTiming?{time:t_0}:{})}};
+        const thread1={name:'worker-1',samples:{stack:s1.stack,weightsByType:wbt1,...(hasTiming?{time:t_1}:{})}};
+
+        const p2 = Object.assign({}, base, { threads: [thread0, thread1] });
+        // Inject via the internal loadProfile — we have to call it from inside the module.
+        // We expose it on __app for testing purposes via window.__injectProfile.
+        if (window.__injectProfile) { window.__injectProfile(p2, 'synthetic-2thread'); return {ok:true}; }
+        return {ok:false,why:'__injectProfile not available'};
+      } catch(e) { return {ok:false,why:e.message}; }
+    })()`);
+
+    // If __injectProfile not available, we'll add it; but for now test via a different route.
+    // We expose __app.setThread and __app.listThreads and test them against the REAL JFR profile
+    // if available, otherwise we inject directly.
+
+    // Expose an internal loadProfile hook for testing (won't be used by non-tests)
+    await evalIn(`(()=>{
+      if(!window.__injectProfile) {
+        // Reach the module's loadProfile via the __app hook
+        // We can't directly call loadProfile (it's module-private), but we can use
+        // the fact that the profile object is mutable — swap threads on the live profile
+        // and call rebuild via __app.resetView which re-reads profile.
+        window.__mutateToMultiThread = function() {
+          const base = window.__fv.p;
+          const t0 = base.threads[0];
+          const stacks = t0.samples.stack;
+          const wt = Object.keys(t0.samples.weightsByType)[0]||'samples';
+          const col = t0.samples.weightsByType[wt]||[];
+          const hasTiming = base.capabilities.hasTiming;
+          const time = hasTiming ? t0.samples.time : null;
+          const s0={stack:[],wt:[]}, s1={stack:[],wt:[]}, t_0=[], t_1=[];
+          for(let i=0;i<stacks.length;i++) {
+            if(i%2===0){s0.stack.push(stacks[i]);s0.wt.push(col[i]||0);if(hasTiming&&time)t_0.push(time[i]);}
+            else{s1.stack.push(stacks[i]);s1.wt.push(col[i]||0);if(hasTiming&&time)t_1.push(time[i]);}
+          }
+          if(!s0.stack.length||!s1.stack.length) return false;
+          const wbt0={}, wbt1={};
+          wbt0[wt]=s0.wt; wbt1[wt]=s1.wt;
+          const thread0={name:'worker-0',samples:{stack:s0.stack,weightsByType:wbt0,...(hasTiming?{time:t_0}:{})}};
+          const thread1={name:'worker-1',samples:{stack:s1.stack,weightsByType:wbt1,...(hasTiming?{time:t_1}:{})}};
+          base.threads.length=0; base.threads.push(thread0,thread1);
+          return true;
+        };
+      }
+    })()`);
+
+    const mutated = await evalIn(`(()=>{
+      if(!window.__mutateToMultiThread) return false;
+      const ok = window.__mutateToMultiThread();
+      if(!ok) return false;
+      // Trigger a rebuild by cycling setThread to 'all' (it reads from the profile object)
+      if(window.__app.setThread) { window.__app.setThread('all'); }
+      return true;
+    })()`);
+    await sleep(80);
+
+    if (mutated) {
+      const tok = await evalIn(`(()=>{const el=document.getElementById('st-thread');return {display:getComputedStyle(el).display,text:el.innerText||''};   })()`);
+      check('FG-053: multi-thread profile — thread token visible', tok.display !== 'none', `display=${tok.display} text="${tok.text}"`);
+
+      const threads = await evalIn(`window.__app.listThreads ? window.__app.listThreads() : null`);
+      check('FG-053: listThreads() returns >1 entries + "all threads"', Array.isArray(threads) && threads.length > 2 && threads[0].index === 'all', `listThreads=${JSON.stringify(threads && threads.slice(0,3))}`);
+
+      // all-threads total >= any single thread
+      const allTotal = await evalIn(`(()=>{window.__app.setThread('all');return window.__fv.ct.grandTotal;})()`);
+      await sleep(50);
+      const t0Total = await evalIn(`(()=>{window.__app.setThread(0);return window.__fv.ct.grandTotal;})()`);
+      await sleep(50);
+      const t1Total = await evalIn(`(()=>{window.__app.setThread(1);return window.__fv.ct.grandTotal;})()`);
+      await sleep(50);
+      check('FG-053: all-threads total >= thread 0 total', allTotal >= t0Total, `all=${allTotal} t0=${t0Total}`);
+      check('FG-053: all-threads total >= thread 1 total', allTotal >= t1Total, `all=${allTotal} t1=${t1Total}`);
+      check('FG-053: setThread(0) changes total vs all', t0Total !== allTotal || t1Total !== allTotal, `all=${allTotal} t0=${t0Total} t1=${t1Total}`);
+
+      // reset back to all-threads
+      await evalIn(`window.__app.setThread('all')`);
+      await sleep(50);
+      check('FG-053: setThread("all") restores merged total', await evalIn(`window.__fv.ct.grandTotal`) === allTotal, `grandTotal after reset`);
+    } else {
+      check('FG-053: multi-thread injection (node.cpuprofile has enough samples)', false, 'could not split samples — too few');
+    }
+
+    // Restore a single-thread profile and confirm the token disappears
+    await evalIn(`window.__app.loadSample('samples/node.cpuprofile')`);
+    await poll(`window.__fv && /node\\.cpuprofile/.test(document.getElementById('info').innerText||'') ? 1 : 0`);
+    const tok2 = await evalIn(`(()=>{const el=document.getElementById('st-thread');return {display:getComputedStyle(el).display};   })()`);
+    check('FG-053: single-thread profile after reload — thread token hidden again', tok2.display === 'none', `display=${tok2.display}`);
+  }
+
   // --- fuzz B: aggregated + multi-weight profile (pprof: no timing, several weight types) ---
   await evalIn(`window.__app.loadSample('samples/multi-value.pprof')`);
   await poll(`window.__fv && window.__fv.p.capabilities.hasTiming === false ? 1 : 0`); // wait until the aggregated profile is actually active (not the "loading…" race)

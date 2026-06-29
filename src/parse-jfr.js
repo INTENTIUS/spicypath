@@ -336,15 +336,18 @@ function makeResolver(pools, classes) {
 // --- Generic event field reader ---------------------------------------------
 //
 // For any stack-bearing sample event: scan its fields and extract
-//   startTime (ticks), stackTrace (CP index), and a named weight field (varint).
+//   startTime (ticks), stackTrace (CP index), eventThread (CP index), and a named weight field.
 // Returns null if the event is malformed or has no valid stackTrace.
 //
 // weightField: the field name to treat as the weight value.
 // ticksToNanos: multiplier to convert ticks→ns (for duration fields); 1 for raw bytes.
+//
+// FG-053: also captures the eventThread CP index so alloc/monitor/park events are
+// attributed to the thread that actually ran them (not a hardcoded dimension name).
 
 function readSampleEvent(buf, p3, eventEnd, fields, weightField, ticksToNanos) {
   let pp = p3;
-  let startTimeTicks = 0, stackTraceIdx = -1, weight = 0;
+  let startTimeTicks = 0, stackTraceIdx = -1, eventThreadIdx = -1, weight = 0;
   let ok = true;
 
   for (const field of fields) {
@@ -352,7 +355,8 @@ function readSampleEvent(buf, p3, eventEnd, fields, weightField, ticksToNanos) {
     try {
       if (field.isCP) {
         const [idx, np] = readVarlong(buf, pp);
-        if (field.name === 'stackTrace') stackTraceIdx = idx;
+        if (field.name === 'stackTrace')   stackTraceIdx = idx;
+        else if (field.name === 'eventThread') eventThreadIdx = idx;
         pp = np;
       } else {
         const [val, np] = readVarlong(buf, pp);
@@ -364,7 +368,7 @@ function readSampleEvent(buf, p3, eventEnd, fields, weightField, ticksToNanos) {
   }
 
   if (!ok || stackTraceIdx < 0) return null;
-  return { startTimeTicks, stackTraceIdx, weight: weight * ticksToNanos };
+  return { startTimeTicks, stackTraceIdx, eventThreadIdx, weight: weight * ticksToNanos };
 }
 
 // --- Main entry point -------------------------------------------------------
@@ -516,12 +520,14 @@ export function parseJfrBytes(bytes) {
       }
 
       // --- ObjectAllocationSample (weight field = "weight", bytes) ---
+      // FG-053: resolve eventThread CP index → real thread name (same as sampledThread for CPU).
       else if (allocSampleId >= 0 && typeId === allocSampleId && allocFields) {
         const ev = readSampleEvent(buf, p3, eventEnd, allocFields, 'weight', 1);
         if (ev) {
           const timeNanos = hdr.startTimeNanos + (ev.startTimeTicks - hdr.startTicks) * ticksToNs;
+          const tname = resolveThreadName(ev.eventThreadIdx);
           allSamples.push({ stack: resolveStack(ev.stackTraceIdx), time: timeNanos,
-            thread: 'alloc', wCpu: 0, wAlloc: ev.weight, wMonitor: 0, wPark: 0 });
+            thread: tname, wCpu: 0, wAlloc: ev.weight, wMonitor: 0, wPark: 0 });
         }
       }
 
@@ -530,8 +536,9 @@ export function parseJfrBytes(bytes) {
         const ev = readSampleEvent(buf, p3, eventEnd, allocNFields, 'allocationSize', 1);
         if (ev) {
           const timeNanos = hdr.startTimeNanos + (ev.startTimeTicks - hdr.startTicks) * ticksToNs;
+          const tname = resolveThreadName(ev.eventThreadIdx);
           allSamples.push({ stack: resolveStack(ev.stackTraceIdx), time: timeNanos,
-            thread: 'alloc', wCpu: 0, wAlloc: ev.weight, wMonitor: 0, wPark: 0 });
+            thread: tname, wCpu: 0, wAlloc: ev.weight, wMonitor: 0, wPark: 0 });
         }
       }
 
@@ -540,8 +547,9 @@ export function parseJfrBytes(bytes) {
         const ev = readSampleEvent(buf, p3, eventEnd, allocOFields, 'allocationSize', 1);
         if (ev) {
           const timeNanos = hdr.startTimeNanos + (ev.startTimeTicks - hdr.startTicks) * ticksToNs;
+          const tname = resolveThreadName(ev.eventThreadIdx);
           allSamples.push({ stack: resolveStack(ev.stackTraceIdx), time: timeNanos,
-            thread: 'alloc', wCpu: 0, wAlloc: ev.weight, wMonitor: 0, wPark: 0 });
+            thread: tname, wCpu: 0, wAlloc: ev.weight, wMonitor: 0, wPark: 0 });
         }
       }
 
@@ -550,8 +558,9 @@ export function parseJfrBytes(bytes) {
         const ev = readSampleEvent(buf, p3, eventEnd, monEnFields, 'duration', ticksToNs);
         if (ev) {
           const timeNanos = hdr.startTimeNanos + (ev.startTimeTicks - hdr.startTicks) * ticksToNs;
+          const tname = resolveThreadName(ev.eventThreadIdx);
           allSamples.push({ stack: resolveStack(ev.stackTraceIdx), time: timeNanos,
-            thread: 'monitor', wCpu: 0, wAlloc: 0, wMonitor: ev.weight, wPark: 0 });
+            thread: tname, wCpu: 0, wAlloc: 0, wMonitor: ev.weight, wPark: 0 });
         }
       }
 
@@ -560,8 +569,9 @@ export function parseJfrBytes(bytes) {
         const ev = readSampleEvent(buf, p3, eventEnd, monWaFields, 'duration', ticksToNs);
         if (ev) {
           const timeNanos = hdr.startTimeNanos + (ev.startTimeTicks - hdr.startTicks) * ticksToNs;
+          const tname = resolveThreadName(ev.eventThreadIdx);
           allSamples.push({ stack: resolveStack(ev.stackTraceIdx), time: timeNanos,
-            thread: 'monitor', wCpu: 0, wAlloc: 0, wMonitor: ev.weight, wPark: 0 });
+            thread: tname, wCpu: 0, wAlloc: 0, wMonitor: ev.weight, wPark: 0 });
         }
       }
 
@@ -570,8 +580,9 @@ export function parseJfrBytes(bytes) {
         const ev = readSampleEvent(buf, p3, eventEnd, parkFields, 'duration', ticksToNs);
         if (ev) {
           const timeNanos = hdr.startTimeNanos + (ev.startTimeTicks - hdr.startTicks) * ticksToNs;
+          const tname = resolveThreadName(ev.eventThreadIdx);
           allSamples.push({ stack: resolveStack(ev.stackTraceIdx), time: timeNanos,
-            thread: 'park', wCpu: 0, wAlloc: 0, wMonitor: 0, wPark: ev.weight });
+            thread: tname, wCpu: 0, wAlloc: 0, wMonitor: 0, wPark: ev.weight });
         }
       }
 
@@ -604,28 +615,27 @@ export function parseJfrBytes(bytes) {
   if (hasPark)    weightTypes.push('park_nanos');
   if (weightTypes.length === 0) weightTypes.push('samples');
 
-  // ONE unified thread: the time-sorted union of ALL events (CPU + alloc + monitor + park).
-  // Each sample carries its own dimension's weight and 0 in the others (sparse multi-value), so
-  // the weight token re-aggregates the flame per dimension over the same stream — the whole point
-  // of FG-052. (Per-thread slicing is FG-053, not this issue; splitting dimensions into separate
-  // threads would strand them behind threads[0], which is all the renderer shows today.)
-  // Name the thread after the modal CPU thread (cosmetic; the stream is the union).
-  const tc = new Map();
-  for (const s of allSamples) if (s.wCpu > 0) tc.set(s.thread, (tc.get(s.thread) || 0) + 1);
-  let tname = 'all'; let bestC = 0;
-  for (const [n, c] of tc) if (c > bestC) { bestC = c; tname = n; }
+  // FG-053: Group samples by real thread name → N Thread objects, one per distinct thread.
+  // Each thread carries sparse multi-value columns (0 for dimensions it doesn't contribute).
+  // The "all threads" merged view (produced by mergedThread() in callnode.js) reproduces
+  // FG-052's unified stream — alloc/wait/park dimensions are reachable in the merged view
+  // and in any per-thread view for the thread that produced them.
+  const threadNames = [...new Set(allSamples.map(s => s.thread))];
 
-  const weightsByType = {};
-  if (hasCpu)     weightsByType['samples']       = allSamples.map(s => s.wCpu);
-  if (hasAlloc)   weightsByType['alloc_bytes']   = allSamples.map(s => s.wAlloc);
-  if (hasMonitor) weightsByType['monitor_nanos'] = allSamples.map(s => s.wMonitor);
-  if (hasPark)    weightsByType['park_nanos']    = allSamples.map(s => s.wPark);
-  for (const wt of weightTypes) { if (!weightsByType[wt]) weightsByType[wt] = allSamples.map(() => 0); }
-
-  const threads = [{
-    name: tname,
-    samples: { stack: allSamples.map(s => s.stack), weightsByType, time: allSamples.map(s => s.time) },
-  }];
+  const threads = threadNames.map(tname => {
+    const ts = allSamples.filter(s => s.thread === tname);
+    const wbt = {};
+    if (hasCpu)     wbt['samples']       = ts.map(s => s.wCpu);
+    if (hasAlloc)   wbt['alloc_bytes']   = ts.map(s => s.wAlloc);
+    if (hasMonitor) wbt['monitor_nanos'] = ts.map(s => s.wMonitor);
+    if (hasPark)    wbt['park_nanos']    = ts.map(s => s.wPark);
+    // Pad any missing weight types with 0-arrays (model invariant: all wt columns present)
+    for (const wt of weightTypes) { if (!wbt[wt]) wbt[wt] = ts.map(() => 0); }
+    return {
+      name: tname,
+      samples: { stack: ts.map(s => s.stack), weightsByType: wbt, time: ts.map(s => s.time) },
+    };
+  });
 
   return b.finish(threads, {
     hasTiming: true, weightTypes, timeUnit: 'nanoseconds', isDiff: false,
