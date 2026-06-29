@@ -20,8 +20,8 @@ or radial view. Not a dashboard, not a Grafana plugin.
 | M1 | Spike: model + parsers + renderer + views + test data | ✅ |
 | M2 | Promotion to `src/` + in-browser file ingestion | ✅ |
 | M3 | Interaction parity (minimap, detail panel, diff, export) | ✅ |
-| **M3.5** | **UI reshape: chrome-less, full-bleed, context-driven (sets the project vibe — NEXT)** | ⬜ |
-| M4 | Point-at-sources (remote adapters, metrics coupling) | ⬜ |
+| M3.5 | UI reshape: chrome-less, full-bleed, context-driven (sets the project vibe) | ✅ |
+| **M4** | **Point-at-sources (remote adapters, metrics coupling) — NEXT** | 🚧 |
 
 ## Issue index
 
@@ -89,7 +89,7 @@ is complete in code.
 
 ## Open issues
 
-## M3.5 — UI reshape: chrome-less, full-bleed, context-driven  **← NEXT**
+## M3.5 — UI reshape: chrome-less, full-bleed, context-driven  ✅ **(shipped)**
 
 **Why this is next, ahead of M4.** The current chrome is speedscope's silhouette: a top
 toolbar + a bottom detail bar sandwiching the canvas. In `src/index.html` the page is four
@@ -431,7 +431,7 @@ chrome + a thin action API only.
   4. Multi-value sample types map to the existing `weightsByType` columns (reuse the pprof path).
 
 ### FG-028 · Remote source adapters (live `/debug/pprof` first) ✅
-- **Status** ⬜ · **Pri** P2 · **Area** infra · **M** M4 · **Depends** FG-001, FG-002
+- **Status** ✅ · **Pri** P2 · **Area** infra · **M** M4 · **Depends** FG-001, FG-002 · _(Slice A shipped — `src/fetch-pprof.js`; Slice B query adapters still ⬜)_
 - The "point-at-sources" layer — a backend-agnostic adapter that normalizes a live source
   into the canonical model the UI already consumes. This is the move that makes spicypath
   **not file-only** — the literal thing speedscope and FF don't do.
@@ -556,11 +556,13 @@ chrome + a thin action API only.
 
 - **Non-goals** (permanent): a dashboard / panel grid; a Grafana **panel** plugin as the
   flagship; owning collection/storage.
-- **Next up:** **M3.5 — the UI reshape** (FG-034 → FG-035 → FG-036 → FG-037): full-bleed
-  canvas + persistent status strip, right-click frame menu + view action API, ⌘K palette +
-  ⌘F search, detail slide-over. Establishes the project's visual identity (chrome-less,
-  context-driven) before M4. _Then_ M4 for the actual differentiating moat — sequence the two
-  cheapest high-payoff adapters first (both reuse the existing pprof parser): **FG-027** (OTLP
-  file, the `pprof ↔ OTLP` convergence target) and **FG-028 Slice A** (live `/debug/pprof`
-  fetch — the step that makes spicypath *not file-only*). **FG-025** (metrics coupling) is the
-  deeper M4 differentiator once those land.
+- **Shipped:** **M3.5 — the UI reshape** (FG-034 → FG-035 → FG-036 → FG-037, plus FG-038 →
+  FG-039 → FG-040): full-bleed canvas + persistent status strip, right-click frame menu + view
+  action API, ⌘K palette + ⌘F search, detail slide-over, the BaseView/FlameView decouple, the
+  radial view, and the Ghostty theme engine. The project's chrome-less, context-driven visual
+  identity is established. **FG-028 Slice A** (live `/debug/pprof` fetch — the step that makes
+  spicypath *not file-only*) also landed (`src/fetch-pprof.js`).
+- **Next up (M4):** the remaining differentiating moat — **FG-027** (OTLP file, the
+  `pprof ↔ OTLP` convergence target, reuses the pprof parser), then **FG-025** (metrics
+  coupling) as the deeper differentiator, and **FG-028 Slice B** (Pyroscope/Parca query
+  adapters).

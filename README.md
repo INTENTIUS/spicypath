@@ -54,6 +54,7 @@ node test/golden.ts       # parse → model → re-emit round-trips
 node test/ingest-test.ts  # format detection + ingestion
 node test/export-test.ts  # export → re-import stability
 node test/diff-test.ts    # diff math
+node test/sandwich-test.ts # sandwich focal selection (incl. hub-less profiles)
 node test/bench.ts         # scale benchmark
 node test/browser.ts      # real-Chrome interaction checks (CDP)
 ```

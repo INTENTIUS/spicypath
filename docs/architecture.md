@@ -126,12 +126,14 @@ A field exists only if an operation needs it:
 | **pprof** | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ |
 | **Chrome `.cpuprofile`** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ |
 | **perf script** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ |
-| **OTLP Profiles** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **OTLP Profiles** _(planned, FG-027)_ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 
-The chart/metric columns are `❌` exactly for the aggregated formats (folded, pprof) —
+The first five rows are shipped parsers; **OTLP Profiles** is a *planned* importer (FG-027,
+not yet in `src/`) — its row shows how the format will map onto the model once the parser
+lands. The chart/metric columns are `❌` exactly for the aggregated formats (folded, pprof) —
 they carry no per-sample time. That is the `hasTiming` flag working as designed: the UI
-hides the chart tab when `hasTiming` is false. Every format maps in; every operation
-reads out or is explicitly unavailable.
+hides the chart tab when `hasTiming` is false. Every (implemented) format maps in; every
+operation reads out or is explicitly unavailable.
 
 ### Invariants
 

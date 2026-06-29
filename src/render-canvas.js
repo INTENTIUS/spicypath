@@ -121,7 +121,7 @@ export class BaseView {
       if (cc >= 2 && (cc > bc || (cc === bc && s > bs))) { bc = cc; bs = s; best = f; }
     }
     if (best >= 0) return best;
-    best = 0; bw = -1; for (let i = 0; i < n; i++) if (ct.self[i] > bw) { bw = ct.self[i]; best = ct.func[i]; }
+    best = 0; let bw = -1; for (let i = 0; i < n; i++) if (ct.self[i] > bw) { bw = ct.self[i]; best = ct.func[i]; }
     return best;
   }
   _buildSandwich() { this.sandwich = buildSandwich(this.p, this.ct, this.focalFunc); }
