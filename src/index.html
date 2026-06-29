@@ -192,7 +192,7 @@
       <button id="m-graph" data-mode="graph">Aggregated</button>
       <button id="m-sandwich" data-mode="sandwich">Sandwich</button>
     </span>
-    <span class="tok" id="st-viewtype" title="view type — click to cycle (flame ⇄ radial)">flame</span>
+    <span class="tok" id="st-viewtype" title="view type — click to cycle (flame → radial → graph)">flame</span>
     <span class="tok" id="st-weight" title="weight type — click to cycle">—</span>
     <span class="tok" id="st-diff" title="diff vs baseline — click to exit" style="display:none">diff</span>
     <span id="info"></span>
@@ -300,6 +300,7 @@
   <script type="module">
     import { FlameView } from './render-canvas.js';
     import { RadialView } from './view-radial.js';
+    import { GraphView } from './view-callgraph.js';
     import { ingestFile, ingestBytes } from './ingest.js';
     import { exportSpeedscope, exportFolded, exportMarkdown } from './export.js';
     import { buildDiff } from './diff.js';
@@ -509,7 +510,7 @@
     const searchEl = document.getElementById('search'), info = document.getElementById('info');
     const detail = document.getElementById('detail'), stWeight = document.getElementById('st-weight'), stDiff = document.getElementById('st-diff'), stView = document.getElementById('st-viewtype');
     const showDetail = (b) => { detail.classList.toggle('on', !!b); updateSourcePanel(b); }; // slide-over + source panel on frame-select
-    const VIEWS = { flame: FlameView, radial: RadialView }; // view-type registry (FG-038/039)
+    const VIEWS = { flame: FlameView, radial: RadialView, graph: GraphView }; // view-type registry (FG-038/039/051)
     const SAMPLES = [['vert.x (real · timed · deep)', 'samples/real-vertx.speedscope.json'], ['Node CPU (timed · simple)', 'samples/node.cpuprofile'], ['pprof (multi-metric)', 'samples/multi-value.pprof'], ['heap (alloc bytes/objects)', 'samples/alloc-heap.pprof'], ['5k samples (scale)', 'samples/scale-5000.cpuprofile']];
     let view, profile, mode = 'graph', fileLabel = '', viewType = 'flame', collapsed = true;
     let _pendingHashState = null; // decoded hash state waiting to be applied on first loadProfile
@@ -1203,6 +1204,7 @@
       c.push(['Mode: Sandwich', () => setMode('sandwich')]);
       c.push(['View: Flame (rectangular)', () => setViewType('flame')]);
       c.push(['View: Radial (sunburst)', () => setViewType('radial')]);
+      c.push(['View: Call graph', () => setViewType('graph')]);
       if (profile) for (const wt of profile.capabilities.weightTypes) c.push(['Weight: ' + wt, () => setWeight(wt)]);
       if (profile) for (const u of ['nanoseconds', 'microseconds', 'milliseconds', 'seconds', 'bytes', 'samples']) c.push(['Weight unit: ' + u, () => relabelWeight(u)]);
       c.push([(collapsed ? 'Disable' : 'Enable') + ' collapse', () => toggleCollapse()]);

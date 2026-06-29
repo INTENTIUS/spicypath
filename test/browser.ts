@@ -354,7 +354,7 @@ try {
     await poll(`window.__fv && window.__fv.mode!=='diff' ? 1 : 0`);
     const vd = await evalIn(`(()=>({mode:window.__fv.mode,type:window.__fv.constructor.name,diff:window.__fv.p.capabilities.isDiff}))()`);
     check('diff: switching view-type exits diff cleanly', vd.mode !== 'diff' && !vd.diff, JSON.stringify(vd));
-    await evalIn(`document.getElementById('st-viewtype').click()`); // back to flame
+    await evalIn(`window.__app.setViewType('flame')`); // back to flame
     await poll(`window.__fv && window.__fv.constructor.name==='FlameView' ? 1 : 0`);
   }
 
@@ -381,9 +381,28 @@ try {
     await evalIn(`window.__fv._onDblClick({clientX:0,clientY:0})`); // outside → zoom out
     check('radial: double-click center zooms out + transition clears', await evalIn(`window.__fv.focus === null`), `anim=${await evalIn(`!!window.__fv._anim`)}`);
   }
-  await evalIn(`document.getElementById('st-viewtype').click()`); // radial → flame
+  // --- FG-051: call-graph (GraphView) view type ---
+  await evalIn(`document.getElementById('st-viewtype').click()`); // radial → graph
+  await poll(`window.__fv && window.__fv.constructor.name==='GraphView' ? 1 : 0`);
+  const gv = await evalIn(`(()=>{const v=window.__fv;return {type:v.constructor.name,mode:v.mode,nodes:v._nodes.length,chartOff:document.getElementById('m-chart').disabled,sandOff:document.getElementById('m-sandwich').disabled,vt:document.getElementById('st-viewtype').innerText};})()`);
+  check('FG-051 graph-view: switches to GraphView + token reads "graph"', gv.type === 'GraphView' && gv.vt === 'graph', JSON.stringify(gv));
+  check('FG-051 graph-view: renders nodes (> 0)', gv.nodes > 0, `_nodes.length=${gv.nodes}`);
+  check('FG-051 graph-view: Timeline + Sandwich mode buttons are disabled (caps)', gv.chartOff && gv.sandOff, JSON.stringify(gv));
+  // click a node → selectedFunc is set (drive via _onClick with canvas-relative coords)
+  await evalIn(`(()=>{const v=window.__fv;const n=v._nodes[0];if(!n)return;const s=v.scale||1,tx=v.tx||0,ty=v.ty||0;const r=v.canvas.getBoundingClientRect();v._onClick({clientX:r.left+n.x*s+tx+n.w*s/2,clientY:r.top+n.y*s+ty+n.h*s/2});})()`);
+  await sleep(60);
+  check('FG-051 graph-view: clicking a node sets selectedFunc', await evalIn(`window.__fv.selectedFunc != null`), `selectedFunc=${await evalIn(`window.__fv.selectedFunc`)}`);
+  // Cmd/Ctrl-wheel changes scale
+  const gvCtr = await evalIn(`(()=>{const cv=document.getElementById('cv');const r=cv.getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height/2};})()`);
+  const gvScaleBefore = await evalIn(`window.__fv.scale`);
+  await cdp.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: gvCtr.x, y: gvCtr.y, deltaX: 0, deltaY: -240, modifiers: 2 }, sessionId);
+  await sleep(60);
+  const gvScaleAfter = await evalIn(`window.__fv.scale`);
+  check('FG-051 graph-view: Ctrl-wheel changes scale', gvScaleAfter !== gvScaleBefore, `scale ${gvScaleBefore} → ${gvScaleAfter}`);
+  // cycle back through to flame
+  await evalIn(`document.getElementById('st-viewtype').click()`); // graph → flame
   await poll(`window.__fv && window.__fv.constructor.name==='FlameView' ? 1 : 0`);
-  check('radial: cycles back to flame', await evalIn(`window.__fv.constructor.name==='FlameView'`), 'back to flame');
+  check('FG-051 graph-view: cycles back to flame (3-type cycle)', await evalIn(`window.__fv.constructor.name==='FlameView'`), 'back to flame via graph');
 
   // --- transition fuzz: mode × view-type × diff × search; invariants after EACH step ---
   await evalIn(`window.__app.resetView && window.__app.setViewType('flame')`); // known base: flame

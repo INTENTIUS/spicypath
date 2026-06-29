@@ -10,6 +10,16 @@ linkable — the entries record *what* shipped and *why*, not the original commi
 
 ## Enhancements (post-M4)
 
+- FG-051 Call graph view — a third view type (after flame and radial): a weighted directed graph
+  of the call structure (nodes = functions sized/colored by weight, edges = caller→callee scaled
+  by cost). Built in five phases: `src/callgraph.js` folds the CallNodeTable into a function-level
+  digraph (recursion → self-edges); `src/callgraph-layout.js` is a zero-dep Sugiyama-style layout
+  (cycle-break → longest-path ranks → barycenter ordering, deterministic); `src/view-callgraph.js`
+  (`GraphView extends BaseView` — the FG-038 seam, zero shared-context changes) renders nodes +
+  edges with pan/zoom, hover-neighborhood highlight, double-click focus-subgraph, and weight-
+  pruning (disclosed). Wired into the view-type cycle (⌘K → "View: Call graph"). Aggregated only;
+  render-time (golden/bench unchanged). The layout's ranking, cycle-breaking, and `_hit`-under-
+  transform were each independently verified.
 - FG-044 Source-map remapping — transpiled/bundled profiles can be mapped back to original
   source. `src/sourcemap.js` is a pure Source Map v3 decoder (base64-VLQ `mappings` →
   `lookup(line, col)`, independently verified against the spec's canonical example) plus
