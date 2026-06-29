@@ -624,6 +624,23 @@ try {
     mockSrvB.close();
   }
 
+  // --- FG-043: open profile from URL (generic fetch → ingest, any format) ---
+  // The harness's static server serves /test/, so a committed fixture is a real same-origin URL.
+  await evalIn(`window.__app.loadSample('samples/node.cpuprofile')`);
+  await poll(`window.__fv && /node\\.cpuprofile/.test(document.getElementById('info').innerText||'') ? 1 : 0`);
+  await evalIn(`window.__app.openUrl('/test/testdata/multi-value.pprof')`);
+  await poll(`window.__fv && /multi-value/.test(document.getElementById('info').innerText||'') ? 1 : 0`);
+  const urlState = await evalIn(`(()=>{const f=window.__fv;return {boxes:f.boxes.length,info:document.getElementById('info').innerText||''};})()`);
+  check('FG-043: open-from-URL fetches + ingests a profile (multi-value pprof)', urlState.boxes > 0 && /multi-value/.test(urlState.info), JSON.stringify(urlState));
+  await sleep(250); // let the debounced (80ms) hash write flush
+  const urlHash = await evalIn(`(()=>{try{return JSON.parse(atob(location.hash.slice(1)));}catch{return null;}})()`);
+  check('FG-043: opened URL round-trips in the hash (srcType=url)', !!(urlHash && urlHash.srcType === 'url' && /multi-value/.test(urlHash.src||'')), JSON.stringify(urlHash));
+  const urlBoxesBefore = await evalIn(`window.__fv.boxes.length`);
+  await evalIn(`window.__app.openUrl('/test/testdata/does-not-exist.pprof')`);
+  await new Promise((r) => setTimeout(r, 400));
+  const urlErr = await evalIn(`(()=>{return {info:document.getElementById('info').innerText||'',boxes:window.__fv?window.__fv.boxes.length:0};})()`);
+  check('FG-043: bad URL surfaces error without wedging the current profile', /fail|error|404|not found/i.test(urlErr.info) && urlErr.boxes === urlBoxesBefore, JSON.stringify(urlErr));
+
   // --- FG-029: state-in-URL — hash encodes view state and restores it ---
   // Reset to a known state using a bundled sample (so _hashSource is set for round-trip).
   await evalIn(`window.__app.loadSample('samples/node.cpuprofile')`);

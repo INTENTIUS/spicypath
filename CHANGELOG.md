@@ -107,6 +107,11 @@ The differentiating layer — making spicypath not file-only. Remaining M4 work 
   rebuild, not as a volatile node index. Tier A source addressing: links to a bundled sample
   or a live `/debug/pprof` URL reopen the same data; a link whose source was a dropped local
   file degrades with a clear status message. No upload — the hash holds only state + a path/URL.
+- FG-043 Open profile from URL — ⌘K → *Open from URL* fetches any supported format by URL and
+  ingests it by magic/extension through the same `loadProfile` path as a dropped file (`.gz`
+  handled). Errors surface in the status line without wedging the current profile. A URL source
+  is re-fetchable, so it round-trips in the share-link hash (`srcType: 'url'`, distinct from a
+  live `/debug/pprof` URL). CORS is the only limitation; nothing is uploaded.
 - FG-031 JFR ingestion — `src/parse-jfr.js` is a native, browser-pure decoder for JDK Flight
   Recorder binaries: chunk headers → metadata schema → constant-pool checkpoints →
   `jdk.ExecutionSample` events, resolving frames to `Class.method` (type IDs resolved by name

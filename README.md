@@ -37,8 +37,9 @@ to open your own; `.gz` is decompressed automatically.
 - **Zoom** by double-clicking a frame or span; **Esc** resets.
 - **Diff** two profiles with *compare* — red marks regressions, blue improvements.
 - **Export** the current profile as `.speedscope.json`, `.folded`, or an `.svg` snapshot.
-- **Connect to a live source** — beyond files, fetch from a Go `/debug/pprof` endpoint or query
-  a Pyroscope / Parca backend (⌘K → *Connect to a profile source*); the live token refetches.
+- **Open from a URL or a live source** — beyond local files: ⌘K → *Open from URL* fetches any
+  supported profile by URL, and *Connect to a profile source* pulls from a Go `/debug/pprof`
+  endpoint or queries a Pyroscope / Parca backend (the live token refetches). CORS permitting.
 - **Metrics** — in Timeline, attach metric tracks (CPU/RAM/…) locked to the time axis: hover a
   track to light the stack at that instant, hover a frame to band its span on the tracks, and
   brush a range to see which functions dominated that window.

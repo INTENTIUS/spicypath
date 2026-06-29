@@ -114,6 +114,18 @@
     #connect button.primary { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
     #connect .fields { display: none; }
     #connect .fields.on { display: block; }
+    /* open-from-URL dialog (FG-043) — same chrome as #connect, themed via vars */
+    #openurl { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; background: rgba(0,0,0,0.4); z-index: 11; }
+    #openurl.on { display: flex; }
+    #openurl .box { width: min(520px, 92vw); background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 18px 20px; box-shadow: 0 16px 50px rgba(0,0,0,0.55); }
+    #openurl h3 { margin: 0 0 6px; font-size: 14px; color: var(--fg); }
+    #openurl p { margin: 0 0 14px; font-size: 11px; color: var(--faint); }
+    #openurl label { display: block; font-size: 11px; color: var(--dim); margin-bottom: 4px; }
+    #openurl input { width: 100%; background: var(--bg); color: var(--fg); border: 1px solid var(--line); border-radius: 6px; padding: 6px 9px; font: 13px Menlo, Consolas, monospace; box-sizing: border-box; outline: none; }
+    #openurl input:focus { border-color: var(--accent); }
+    #openurl .btns { display: flex; gap: 8px; margin-top: 14px; justify-content: flex-end; }
+    #openurl button { padding: 5px 14px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel); color: var(--fg); font: inherit; cursor: pointer; }
+    #openurl button.primary { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
     #st-live { display: none; background: #1a4a2e; border-color: #2d7a4f; color: #4ade80; }
     #st-live.on { display: inline-block; } /* shown while a live source is active (overrides the base none) */
   </style>
@@ -225,6 +237,19 @@
       <div class="btns">
         <button id="cn-cancel">Cancel</button>
         <button id="cn-fetch" class="primary">Fetch profile</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="openurl">
+    <div class="box">
+      <h3>Open profile from URL</h3>
+      <p>Any supported format (pprof · OTLP · cpuprofile · speedscope · folded · perf · Gecko · JFR; .gz ok). The endpoint must allow this origin (CORS).</p>
+      <label>Profile URL</label>
+      <input id="ou-url" type="url" placeholder="https://example.com/profile.pprof" spellcheck="false">
+      <div class="btns">
+        <button id="ou-cancel">Cancel</button>
+        <button id="ou-open" class="primary">Open</button>
       </div>
     </div>
   </div>
@@ -414,9 +439,10 @@
         if (fp && fp.length) state.fp = fp;
         if (view.win) state.win = view.win;
       }
-      // source addressing (Tier A): persist sample path or live URL
+      // source addressing (Tier A): persist sample path / live pprof URL / generic URL
       if (_hashSource) {
         state.src = _hashSource.type === 'sample' ? _hashSource.path : _hashSource.url;
+        state.srcType = _hashSource.type; // 'sample' | 'live' | 'url' — disambiguates on restore
         if (_hashSource.type === 'live') state.srcSec = _hashSource.seconds;
       }
       const encoded = btoa(JSON.stringify(state));
@@ -602,6 +628,30 @@
       catch (e) { info.textContent = `failed to load ${f.name}: ${e.message}`; }
     }
 
+    // FG-043: open a profile from an arbitrary URL — fetch → ingest by magic/extension →
+    // loadProfile (same path as a dropped file). A URL source IS re-fetchable, so it round-trips
+    // in the share-link hash (tagged srcType:'url' to distinguish from a live /debug/pprof URL).
+    const openUrlOverlay = document.getElementById('openurl'), ouUrl = document.getElementById('ou-url');
+    function openUrlDialog() { openUrlOverlay.classList.add('on'); ouUrl.focus(); ouUrl.select(); }
+    function closeUrlDialog() { openUrlOverlay.classList.remove('on'); }
+    function _urlBasename(url) { try { return new URL(url, location.href).pathname.split('/').pop() || 'profile'; } catch { return (url.split('/').pop() || 'profile').split('?')[0]; } }
+    async function doOpenUrl(url) {
+      url = (url || '').trim(); if (!url) return;
+      const name = _urlBasename(url);
+      info.textContent = `fetching ${name}…`;
+      try {
+        const res = await fetch(url);
+        if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+        const bytes = new Uint8Array(await res.arrayBuffer());
+        _hashSource = { type: 'url', url };
+        loadProfile(await ingestBytes(name, bytes), name);
+      } catch (e) { info.textContent = `failed to open ${name}: ${e.message}`; }
+    }
+    document.getElementById('ou-open').onclick = () => { closeUrlDialog(); doOpenUrl(ouUrl.value); };
+    document.getElementById('ou-cancel').onclick = closeUrlDialog;
+    openUrlOverlay.onmousedown = (e) => { if (e.target === openUrlOverlay) closeUrlDialog(); };
+    ouUrl.onkeydown = (e) => { if (e.key === 'Enter') { closeUrlDialog(); doOpenUrl(ouUrl.value); } else if (e.key === 'Escape') { closeUrlDialog(); e.stopPropagation(); } };
+
     bGraph.onclick = () => setMode('graph');
     bChart.onclick = () => setMode('chart');
     bSand.onclick = () => setMode('sandwich');
@@ -759,6 +809,8 @@
     window.__app = {
       setMode, setViewType, resetView, loadSample, setTheme: applyTheme, listThemes,
       fetchPprofUrl: (url, seconds = 5) => doFetchPprof(url, seconds),
+      openUrl: (url) => doOpenUrl(url), // FG-043
+      openUrlDialog,
       // FG-028 Slice B: headless hooks for Pyroscope and Parca adapters.
       // Each goes through the real adapter → loadProfile → liveSource → token path.
       // Pyroscope: from/until are Unix epoch SECONDS.
@@ -839,6 +891,7 @@
     function paletteCommands() {
       const c = [];
       c.push(['Open profile…', () => document.getElementById('file').click()]);
+      c.push(['Open from URL…', () => openUrlDialog()]);
       c.push(['Load source files…', () => document.getElementById('file-src').click()]);
       c.push(['Connect to a profile source…', () => openConnect()]);
       c.push(['Connect to live /debug/pprof…', () => openConnect('debug-pprof')]);
@@ -961,7 +1014,7 @@
       const inInput = /^(INPUT|SELECT|TEXTAREA)$/.test(document.activeElement?.tagName || '');
       if (e.key === '/' && !inInput) { e.preventDefault(); openSearch(); return; }
       if (e.key === '?' && !inInput) { e.preventDefault(); toggleHelp(); return; }
-      if (e.key === 'Escape') { hideMenu(); closePalette(); closeThemePicker(); closeConnect(); help.classList.remove('on'); srcPanel.classList.remove('on'); if (pill.classList.contains('on') && !searchEl.value) closeSearch(); if (view && !inInput) { view.resetZoom(); showDetail(false); _scheduleHashWrite(); } return; }
+      if (e.key === 'Escape') { hideMenu(); closePalette(); closeThemePicker(); closeConnect(); closeUrlDialog(); help.classList.remove('on'); srcPanel.classList.remove('on'); if (pill.classList.contains('on') && !searchEl.value) closeSearch(); if (view && !inInput) { view.resetZoom(); showDetail(false); _scheduleHashWrite(); } return; }
       if (inInput || !view || !profile) return;
       const caps = (VIEWS[viewType].capabilities || { modes: ['graph', 'chart', 'sandwich'] }).modes;
       if (e.key === '1' && caps.includes('chart')) setMode('chart');
@@ -985,8 +1038,12 @@
         // Apply any non-source view settings from the hash as pending state (applied after load).
         _pendingHashState = hashState;
         if (hashState.src) {
-          // Tier A: bundled sample or live pprof URL
+          // Source addressing: generic URL (re-fetchable), bundled sample, or live pprof URL.
           const src = hashState.src;
+          if (hashState.srcType === 'url') {
+            _hashSource = { type: 'url', url: src };
+            await doOpenUrl(src);
+          } else {
           const isLiveUrl = /^https?:\/\//.test(src) && !src.startsWith(location.origin);
           // A relative/local sample path (starts with 'samples/') or same-origin absolute
           const isSamplePath = !isLiveUrl;
@@ -1007,6 +1064,7 @@
             const seconds = hashState.srcSec || 5;
             await doFetchPprof(src, seconds);
           }
+          } // end non-url source dispatch
         } else {
           // No source in hash — must have been a dropped file. Degrade gracefully.
           info.textContent = 'Shared link: original profile was a local file — drop a profile to restore view settings';
