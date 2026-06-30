@@ -10,6 +10,13 @@ linkable — the entries record *what* shipped and *why*, not the original commi
 
 ## Enhancements (post-M4)
 
+- FG-054 JFR GC events as metric tracks — `src/parse-jfr.js` now also decodes the stackless
+  `jdk.GCPhasePause` (and `…PauseLevel1`) duration events into a `MetricSeries` ("GC pause", ms)
+  on `Profile.metrics`, time-aligned to the recording's sample/chart axis. With no renderer change
+  it surfaces through the FG-025 metric lanes on the Timeline, so a GC spike sits next to the flame
+  and brushing it re-aggregates to that window — the "GC or the app?" question in one view. Purely
+  additive: non-JFR profiles keep empty `metrics`. Validated against the `jfr` tool (pause
+  durations match exactly).
 - FG-053 Thread selector — multi-thread recordings can be sliced by thread. A new
   `mergedThread(profile)` (`src/callnode.js`) concatenates every thread's samples over the shared
   interned tables; `buildCallNodeTable`/`buildFlameChart` accept a Thread object or an index (the

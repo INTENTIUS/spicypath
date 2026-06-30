@@ -244,6 +244,80 @@ import { buildCallNodeTable } from '../src/callnode.js';
   console.log(`ok    merged grandTotal (${mergedCt.grandTotal}) >= all per-thread totals`);
 }
 
+// ---- (i2) FG-054: GC MetricSeries -------------------------------------------------------
+// The workload (allocHot, 2.5 s, 3 threads) should trigger at least one GC pause.
+// If it doesn't (very fast machine, ZGC with concurrent pauses, etc.) we accept the
+// additive no-op (metrics empty) rather than hard-failing, since the implementation
+// requirement is "if GC events exist, surface them; otherwise no-op".
+{
+  const gcPauseSeries = profile.metrics.find(
+    (m: { name: string }) => m.name === 'GC pause',
+  );
+
+  if (!gcPauseSeries) {
+    console.log('note  FG-054: no GC pause events in this recording (additive no-op, ok)');
+  } else {
+    const { time, value } = gcPauseSeries as { name: string; unit: string; time: number[]; value: number[] };
+
+    // Basic shape
+    assert(time.length === value.length,
+      `GC pause series: time.length (${time.length}) !== value.length (${value.length})`);
+    assert(time.length > 0, 'GC pause series must be non-empty when present');
+
+    // time[] is non-decreasing (monotonic)
+    for (let i = 1; i < time.length; i++) {
+      assert(time[i] >= time[i - 1],
+        `GC pause series: time not monotonic at index ${i}`);
+    }
+
+    // All values are finite and non-negative (durations in ms)
+    for (let i = 0; i < value.length; i++) {
+      assert(isFinite(value[i]) && value[i] >= 0,
+        `GC pause series: value[${i}] = ${value[i]} is not finite/non-negative`);
+    }
+
+    // Alignment sanity: the series' time range falls within the recording's sample time range.
+    // At minimum, the GC pause times should be in the same nanosecond ball-park as CPU samples.
+    const sampleTimes: number[] = [];
+    for (const t of profile.threads) {
+      if (t.samples.time) for (const ts of t.samples.time) sampleTimes.push(ts);
+    }
+    if (sampleTimes.length > 0) {
+      const sMin = Math.min(...sampleTimes);
+      const sMax = Math.max(...sampleTimes);
+      const gMin = time[0];
+      const gMax = time[time.length - 1];
+      // GC times should overlap with the sample recording window (within 10s tolerance)
+      const tol = 10e9; // 10 seconds in ns
+      assert(gMax >= sMin - tol && gMin <= sMax + tol,
+        `GC pause series time range [${gMin},${gMax}] ns does not overlap sample range [${sMin},${sMax}] ns`);
+    }
+
+    const unitOk = (gcPauseSeries as any).unit === 'ms';
+    assert(unitOk, `GC pause series unit should be "ms", got "${(gcPauseSeries as any).unit}"`);
+
+    console.log(`ok    FG-054: GC pause series has ${time.length} event(s), values [${value.map(v => v.toFixed(3)).join(', ')}] ms`);
+  }
+
+  // GC phase L1 series: same structural checks, best-effort (may or may not be present)
+  const gcL1Series = profile.metrics.find(
+    (m: { name: string }) => m.name === 'GC phase L1',
+  );
+  if (gcL1Series) {
+    const { time, value } = gcL1Series as { name: string; unit: string; time: number[]; value: number[] };
+    assert(time.length === value.length, 'GC phase L1 series: time/value length mismatch');
+    for (let i = 1; i < time.length; i++) {
+      assert(time[i] >= time[i - 1], `GC phase L1 series: time not monotonic at ${i}`);
+    }
+    for (let i = 0; i < value.length; i++) {
+      assert(isFinite(value[i]) && value[i] >= 0, `GC phase L1: value[${i}] not finite/non-negative`);
+    }
+    console.log(`ok    FG-054: GC phase L1 series has ${time.length} event(s)`);
+  } else {
+    console.log('note  FG-054: GC phase L1 series not present (ok)');
+  }
+}
+
 // ---- (i) ingest path: the file-open route (drop / picker) detects JFR by magic ----------
 // File-open goes through ingestBytes, not parseJfr directly — verify both the .jfr extension
 // and the EXTENSIONLESS case (magic-byte sniff) so a dropped/renamed .jfr still works.

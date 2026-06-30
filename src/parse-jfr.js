@@ -19,6 +19,21 @@
 // identically to ExecutionSample. Duration fields use TICKS that are converted to nanoseconds
 // with the chunk's ticksPerSecond. The unified sample stream is sorted by time so time[] is
 // non-decreasing across all weight types.
+//
+// FG-054 — stackless duration timeline events → MetricSeries (event names are JDK-version-
+// dependent; resolved by name from chunk metadata, skipped if absent):
+//
+//   jdk.GCPhasePause        → "GC pause" series, unit "ms"
+//     serialized fields (in order, after settings fields are filtered out):
+//       startTime  (ticks, non-CP varint)
+//       duration   (@Timespan, ticks, non-CP varint) → converted to ms
+//       eventThread (CP ref, skipped)
+//       gcId       (varint, skipped)
+//       name       (java.lang.String inline, skipped via readStringField)
+//   jdk.GCPhasePauseLevel1  → "GC phase L1" series, unit "ms" (same field layout)
+//
+// Both are the stop-the-world top-level GC pause and its immediate sub-phases. The time
+// base is the same as the sample stream: startTimeNanos + (eventTicks − startTicks) * ticksToNs.
 import { ProfileBuilder } from './model.js';
 
 // --- Big-endian chunk header ------------------------------------------------
@@ -371,6 +386,48 @@ function readSampleEvent(buf, p3, eventEnd, fields, weightField, ticksToNanos) {
   return { startTimeTicks, stackTraceIdx, eventThreadIdx, weight: weight * ticksToNanos };
 }
 
+// --- Duration event reader (FG-054) ----------------------------------------
+//
+// Reads a stackless duration event by walking its schema-defined fields in order.
+// Extracts startTime (ticks) and duration (ticks) and skips everything else.
+// Returns { startTimeTicks, durationTicks } or null on parse error.
+//
+// Non-CP primitive fields (including @Timespan ticks) are varints. CP refs are
+// varints (raw index, not resolved). java.lang.String non-CP fields use the JFR
+// string encoding (readStringField). All other non-CP composite fields are
+// read as a single varint (best-effort fallback for unknown composites).
+//
+// NOTE: the `name` field on jdk.GCPhasePause/Level1 is class 239 (java.lang.String)
+// with no constantPool flag — it is serialized inline via the JFR string encoding,
+// NOT as a CP ref. We skip it with readStringField().
+
+function readDurationEvent(buf, p3, eventEnd, fields, stringClassId) {
+  let pp = p3;
+  let startTimeTicks = 0, durationTicks = 0;
+
+  for (const field of fields) {
+    if (pp >= eventEnd) return null;
+    try {
+      if (field.isCP) {
+        // CP ref: consume one varint (the pool index)
+        [, pp] = readVarlong(buf, pp);
+      } else if (field.classId === stringClassId) {
+        // java.lang.String stored inline via JFR string encoding
+        const val = readStringField(buf, pp);
+        pp = val[1];
+      } else {
+        // Primitive, @Timespan (ticks), or unknown non-CP composite: consume one varint
+        const [val, np] = readVarlong(buf, pp);
+        if (field.name === 'startTime')  startTimeTicks = val;
+        else if (field.name === 'duration') durationTicks  = val;
+        pp = np;
+      }
+    } catch (_) { return null; }
+  }
+
+  return { startTimeTicks, durationTicks };
+}
+
 // --- Main entry point -------------------------------------------------------
 
 export function parseJfrBytes(bytes) {
@@ -382,6 +439,12 @@ export function parseJfrBytes(bytes) {
   // { stack: number, time: number, thread: string,
   //   wCpu: number, wAlloc: number, wMonitor: number, wPark: number }
   const allSamples = [];
+
+  // FG-054: raw GC duration events accumulated across all chunks (time in ns, duration in ms).
+  // Built into MetricSeries after the chunk scan and passed to b.finish().
+  // { time: number (ns), value: number (ms) }
+  const gcPauseRaw   = []; // jdk.GCPhasePause
+  const gcLevel1Raw  = []; // jdk.GCPhasePauseLevel1
 
   let chunkStart = 0;
   while (chunkStart < buf.length) {
@@ -402,22 +465,27 @@ export function parseJfrBytes(bytes) {
     // Find event type IDs by name (assigned per-recording by the schema).
     // Skip any event type absent from this recording.
     let execSampleId   = -1, stackTraceClassId = -1, methodClassId = -1;
-    let threadClassId  = -1;
+    let threadClassId  = -1, stringClassId     = -1;
     let allocSampleId  = -1, allocNewTlabId    = -1, allocOobTlabId  = -1;
     let monEnterSampleId = -1, monWaitSampleId = -1;
     let parkSampleId   = -1;
+    // FG-054: GC pause event type IDs (resolved by name; skipped if absent in this recording)
+    let gcPausePauseId = -1, gcLevel1Id        = -1;
     for (const [id, cls] of classes) {
       switch (cls.name) {
         case 'jdk.ExecutionSample':              execSampleId       = id; break;
         case 'jdk.types.StackTrace':             stackTraceClassId  = id; break;
         case 'jdk.types.Method':                 methodClassId      = id; break;
         case 'java.lang.Thread':                 threadClassId      = id; break;
+        case 'java.lang.String':                 stringClassId      = id; break;
         case 'jdk.ObjectAllocationSample':       allocSampleId      = id; break;
         case 'jdk.ObjectAllocationInNewTLAB':    allocNewTlabId     = id; break;
         case 'jdk.ObjectAllocationOutsideTLAB':  allocOobTlabId     = id; break;
         case 'jdk.JavaMonitorEnter':             monEnterSampleId   = id; break;
         case 'jdk.JavaMonitorWait':              monWaitSampleId    = id; break;
         case 'jdk.ThreadPark':                   parkSampleId       = id; break;
+        case 'jdk.GCPhasePause':                 gcPausePauseId     = id; break;
+        case 'jdk.GCPhasePauseLevel1':           gcLevel1Id         = id; break;
       }
     }
 
@@ -477,6 +545,9 @@ export function parseJfrBytes(bytes) {
     const monEnFields   = fields(monEnterSampleId);
     const monWaFields   = fields(monWaitSampleId);
     const parkFields    = fields(parkSampleId);
+    // FG-054: fields for stackless duration events
+    const gcPauseFields = fields(gcPausePauseId);
+    const gcLevel1Fields = fields(gcLevel1Id);
 
     // Scan events in the chunk
     let p = chunkStart + CHUNK_HDR_SIZE;
@@ -586,16 +657,52 @@ export function parseJfrBytes(bytes) {
         }
       }
 
+      // --- FG-054: jdk.GCPhasePause (stop-the-world top-level GC pause) ---
+      // Fields in stream order: startTime (ticks), duration (@Timespan ticks),
+      // eventThread (CP ref), gcId (varint), name (java.lang.String inline).
+      // duration ticks → ms: durationTicks * ticksToNs / 1e6
+      else if (gcPausePauseId >= 0 && typeId === gcPausePauseId && gcPauseFields) {
+        const ev = readDurationEvent(buf, p3, eventEnd, gcPauseFields, stringClassId);
+        if (ev) {
+          const timeNanos = hdr.startTimeNanos + (ev.startTimeTicks - hdr.startTicks) * ticksToNs;
+          gcPauseRaw.push({ time: timeNanos, value: ev.durationTicks * ticksToNs / 1e6 });
+        }
+      }
+
+      // --- FG-054: jdk.GCPhasePauseLevel1 (immediate sub-phases of the GC pause) ---
+      // Same field layout as jdk.GCPhasePause.
+      else if (gcLevel1Id >= 0 && typeId === gcLevel1Id && gcLevel1Fields) {
+        const ev = readDurationEvent(buf, p3, eventEnd, gcLevel1Fields, stringClassId);
+        if (ev) {
+          const timeNanos = hdr.startTimeNanos + (ev.startTimeTicks - hdr.startTicks) * ticksToNs;
+          gcLevel1Raw.push({ time: timeNanos, value: ev.durationTicks * ticksToNs / 1e6 });
+        }
+      }
+
       p = eventEnd;
     }
 
     chunkStart = chunkEnd;
   }
 
+  // FG-054: build MetricSeries for each GC event type that produced data.
+  // time[] is in the same nanosecond base as the sample stream (startTimeNanos + tick offset).
+  // value[] is in ms. Both arrays are sorted by time so time[] is non-decreasing.
+  // If no GC events were recorded, metrics stays [] and the profile is unchanged.
+  function buildSeries(raw, name, unit) {
+    if (!raw.length) return null;
+    raw.sort((a, b) => a.time - b.time);
+    return { name, unit, time: raw.map(e => e.time), value: raw.map(e => e.value) };
+  }
+  const metrics = [
+    buildSeries(gcPauseRaw,  'GC pause',    'ms'),
+    buildSeries(gcLevel1Raw, 'GC phase L1', 'ms'),
+  ].filter(Boolean);
+
   if (allSamples.length === 0) {
     return b.finish([], {
       hasTiming: true, weightTypes: ['samples'], timeUnit: 'nanoseconds', isDiff: false,
-    });
+    }, metrics);
   }
 
   // Sort all samples by time (monotonic order across all threads/types)
@@ -639,5 +746,5 @@ export function parseJfrBytes(bytes) {
 
   return b.finish(threads, {
     hasTiming: true, weightTypes, timeUnit: 'nanoseconds', isDiff: false,
-  });
+  }, metrics);
 }
