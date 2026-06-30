@@ -10,6 +10,20 @@ linkable — the entries record *what* shipped and *why*, not the original commi
 
 ## Enhancements (post-M4)
 
+- FG-042 Vaus mode (hidden easter egg) — a brick-breaker where the flame-graph boxes are the
+  bricks (toughness scales with box weight; root + runtime/gc frames are the indestructible back
+  wall). Built as `GameView extends BaseView` (`src/view-vaus.js`) over a pure, DOM-free sim
+  (`src/vaus.js`), overlaying a read-only snapshot of the host view's boxes. Reached only via the
+  ⌘K "Play this profile" command or the Konami code — never a visible mode tab. The host view is
+  paused, not mutated: the game's pointer/key listeners run in the capture phase and swallow events
+  so the underlying view never hovers, zooms, or repaints, and quitting (Esc → Quit, or win/lose)
+  restores the exact prior view — same object, boxes, mode, zoom — with no rebuild. Web-Audio
+  synthesised SFX only (no asset files); `gameConfig` (difficulty, lives, indestructible set,
+  power-ups, sound) persists to `localStorage`. Homage to Taito's Arkanoid (1986); see
+  [`CREDITS.md`](./CREDITS.md). Tests: `test/vaus-test.ts` (pure physics/classification/win-lose/
+  config) + `test/browser.ts` (both entry paths, deterministic brick destruction, host-untouched,
+  exact-restore, no-leak, config persistence).
+
 - FG-054 JFR GC events as metric tracks — `src/parse-jfr.js` now also decodes the stackless
   `jdk.GCPhasePause` (and `…PauseLevel1`) duration events into a `MetricSeries` ("GC pause", ms)
   on `Profile.metrics`, time-aligned to the recording's sample/chart axis. With no renderer change

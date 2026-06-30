@@ -302,6 +302,7 @@
     import { FlameView } from './render-canvas.js';
     import { RadialView } from './view-radial.js';
     import { GraphView } from './view-callgraph.js';
+    import { GameView, KONAMI } from './view-vaus.js'; // FG-042
     import { ingestFile, ingestBytes } from './ingest.js';
     import { exportSpeedscope, exportFolded, exportMarkdown } from './export.js';
     import { buildDiff } from './diff.js';
@@ -688,6 +689,35 @@
       return (idx >= 0 && idx < n) ? idx : 0;
     }
     function rebuild() { if (view) view.dispose(); const V = VIEWS[viewType] || FlameView; const thread = _resolveThreadArg(); view = new V(cv, profile, wtSel.value, mode, { onSelect: showDetail, thread }); view.collapse = collapsed; view.setSearch(searchEl.value); window.__fv = view; /* test handle (test/browser.ts) */ updateThreadToken(); }
+
+    // FG-042: Vaus mode — hidden easter egg. Snapshot the host view, overlay the game.
+    // The host view object is never mutated; after quit we repaint it in place (no rebuild).
+    let _vausGame = null; // active GameView, or null
+    function _vausGuard() { return !!(profile && view && view.boxes && view.boxes.length > 0); }
+
+    function startVaus() {
+      if (_vausGame) return;                  // already active
+      if (!_vausGuard()) return;              // no profile or no boxes
+      // Take a read-only snapshot: shallow-copy the box array (boxes are plain objects).
+      // window.__fv stays pointed at the host view — the game is reached via __app.vaus*.
+      const boxSnap = view.boxes.slice();
+      const themeSnap = Object.assign({}, view.T);
+      const profSnap = profile; // profile is immutable (parsers produce frozen-ish objects)
+      // Pause any in-flight host repaint; the game's capture-phase listeners keep the host
+      // from scheduling new ones while it overlays.
+      if (view._raf) { cancelAnimationFrame(view._raf); view._raf = 0; }
+      _vausGame = new GameView(cv, boxSnap, profSnap, themeSnap, () => quitVaus());
+    }
+
+    function quitVaus() {
+      if (!_vausGame) return;                 // no-op if called twice
+      _vausGame.dispose();
+      _vausGame = null;
+      // Restore the exact prior view with no rebuild — relayout refits the canvas the game
+      // resized, then draw repaints the host's untouched state (mode/zoom/crop/selection).
+      view.relayout();
+      requestAnimationFrame(() => { view.draw(); });
+    }
     function applyCaps() { // disable mode buttons the active view type can't do
       const caps = (VIEWS[viewType].capabilities || { modes: ['graph', 'chart', 'sandwich'] }).modes;
       bChart.disabled = !caps.includes('chart') || !(profile && profile.capabilities.hasTiming);
@@ -1106,6 +1136,27 @@
       // FG-049: function list panel test hooks
       openFuncList: () => openFuncList(),
       isFuncListOpen: () => funclistEl.classList.contains('on'),
+      // FG-042: Vaus mode test hooks
+      startVaus: () => startVaus(),
+      vausActive: () => !!_vausGame,
+      vausBegin: () => { if (_vausGame) _vausGame._start(); }, // splash → playing (no Space gesture)
+      vausState: () => {
+        if (!_vausGame) return null;
+        const g = _vausGame._game;
+        return {
+          phase: g ? g.phase : 'splash',
+          bricks: g ? g.bricks.length : 0,
+          destructibleLeft: g ? g.bricks.filter((b) => !b.indestructible && !b.destroyed).length : 0,
+          score:  g ? g.score : 0,
+          lives:  g ? g.lives : 0,
+        };
+      },
+      vausBricks: () => (_vausGame && _vausGame._game)
+        ? _vausGame._game.bricks.map((b) => ({ x: b.x, y: b.y, w: b.w, h: b.h, indestructible: b.indestructible, destroyed: b.destroyed, hp: b.hp }))
+        : [],
+      vausStep: (dtMs, opts) => { if (_vausGame) _vausGame._stepForTest(dtMs / 1000, opts); },
+      vausSetBall: (x, y, vx, vy) => { if (_vausGame && _vausGame._game && _vausGame._game.balls.length) { const b = _vausGame._game.balls[0]; b.x = x; b.y = y; b.vx = vx; b.vy = vy; b.launched = true; } },
+      vausQuit: () => quitVaus(),
       // FG-048: relabel the active weight unit (changes only display/formatting, not numbers)
       setWeightUnit: (unit) => relabelWeight(unit),
     };
@@ -1310,6 +1361,10 @@
       c.push(['Help / keyboard shortcuts', () => toggleHelp()]);
       for (const name of listThemes()) c.push(['Theme: ' + name + (name === getThemeName() ? ' ✓' : ''), () => applyTheme(name)]);
       c.push(['Reset view', () => resetView()]);
+      // FG-042: Vaus mode entry (palette only — never a visible mode tab)
+      if (profile && view && view.boxes && view.boxes.length > 0) {
+        c.push(['Play this profile  (Vaus mode)', () => startVaus()]);
+      }
       return c.map(([label, run]) => ({ label, run }));
     }
     function palRender() {
@@ -1407,8 +1462,26 @@
       if (profileFiles.length) await openFile(profileFiles[0]);
     });
 
+    // FG-042: Konami code global listener — ↑↑↓↓←→←→BA → startVaus()
+    // Only fires when not typing in an input and a profile is loaded.
+    let _konamiIdx = 0;
+    window.addEventListener('keydown', (e) => {
+      const inInput = /^(INPUT|SELECT|TEXTAREA)$/.test(document.activeElement?.tagName || '');
+      if (!inInput) {
+        if (e.key === KONAMI[_konamiIdx]) {
+          _konamiIdx++;
+          if (_konamiIdx === KONAMI.length) { _konamiIdx = 0; if (_vausGuard()) startVaus(); }
+        } else {
+          _konamiIdx = (e.key === KONAMI[0]) ? 1 : 0;
+        }
+      } else {
+        _konamiIdx = 0;
+      }
+    }, true); // capture phase so it runs before any other handler
+
     // keymap: ⌘K palette · ⌘F or / search · 1/2/3 modes · c collapse · Esc dismiss/reset
     window.addEventListener('keydown', (e) => {
+      if (_vausGame) return; // FG-042: Vaus mode owns all input while active (also swallowed in capture)
       const mod = e.metaKey || e.ctrlKey;
       if (mod && (e.key === 'k' || e.key === 'K')) { e.preventDefault(); palette.classList.contains('on') ? closePalette() : openPalette(); return; }
       if (mod && (e.key === 'f' || e.key === 'F')) { e.preventDefault(); openSearch(); return; }

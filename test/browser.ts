@@ -1460,6 +1460,102 @@ try {
     check('FG-044: fixture has a function with file+line (needed for map test)', false, 'no usable func found — test skipped');
   }
 
+  // ── FG-042: Vaus mode (easter-egg overlay) ─────────────────────────────────────────────
+  // The game overlays the canvas over a read-only snapshot of the host view's boxes. Entering
+  // and quitting must never mutate the underlying analytical view.
+  {
+    // Clean slate: reload the base sample and force a flame (graph) view with boxes.
+    // Re-resolve the #file node (the cached id from page-load may be stale after earlier blocks).
+    const { root: vausRoot } = await cdp.send('DOM.getDocument', {}, sessionId);
+    const vausFile = await cdp.send('DOM.querySelector', { nodeId: vausRoot.nodeId, selector: '#file' }, sessionId);
+    await cdp.send('DOM.setFileInputFiles', { nodeId: vausFile.nodeId, files: [DATA] }, sessionId);
+    await poll(`/node\\.cpuprofile/.test(document.getElementById('info').innerText||'') && window.__fv ? 1 : 0`);
+    await evalIn(`document.getElementById('m-graph') && document.getElementById('m-graph').click()`);
+    await poll(`window.__fv && window.__fv.boxes && window.__fv.boxes.length>0 ? 1 : 0`);
+
+    // Snapshot the host identity + key state BEFORE entering the game.
+    const hostBefore = await evalIn(`(()=>{const v=window.__fv;window.__vausHost=v;return {boxes:v.boxes.length,mode:v.mode,focusNull:v.focus==null};})()`);
+
+    // --- entry path 1: Konami code (↑↑↓↓←→←→ b a) ---
+    await evalIn(`document.activeElement && document.activeElement.blur && document.activeElement.blur()`);
+    const konami: [string, number][] = [['ArrowUp',38],['ArrowUp',38],['ArrowDown',40],['ArrowDown',40],['ArrowLeft',37],['ArrowRight',39],['ArrowLeft',37],['ArrowRight',39],['b',66],['a',65]];
+    for (const [key, vk] of konami) {
+      await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key, code: key.length === 1 ? 'Key' + key.toUpperCase() : key, windowsVirtualKeyCode: vk }, sessionId);
+      await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key, code: key.length === 1 ? 'Key' + key.toUpperCase() : key, windowsVirtualKeyCode: vk }, sessionId);
+    }
+    const konamiActive = await evalIn(`window.__app.vausActive()`);
+    check('FG-042: Konami code enters Vaus mode', konamiActive === true);
+    await evalIn(`window.__app.vausQuit()`);
+    await sleep(30);
+    const afterKonamiQuit = await evalIn(`(()=>({active:window.__app.vausActive(), same:window.__fv===window.__vausHost}))()`);
+    check('FG-042: quit after Konami restores host view', afterKonamiQuit.active === false && afterKonamiQuit.same === true);
+
+    // --- entry path 2: palette command (startVaus hook) ---
+    await evalIn(`window.__app.startVaus()`);
+    const active = await evalIn(`window.__app.vausActive()`);
+    check('FG-042: startVaus (palette path) activates the overlay', active === true);
+    const fvStable = await evalIn(`window.__fv === window.__vausHost`);
+    check('FG-042: host __fv identity unchanged while game active', fvStable === true);
+
+    await evalIn(`window.__app.vausBegin()`); // splash → playing without a Space gesture
+    const st = await evalIn(`window.__app.vausState()`);
+    check('FG-042: game builds bricks from the box snapshot', !!st && st.phase === 'playing' && st.bricks > 0, `phase=${st && st.phase}, bricks=${st && st.bricks}`);
+    check('FG-042: bricks include destructibles', !!st && st.destructibleLeft > 0, `destructibleLeft=${st && st.destructibleLeft}`);
+
+    // Deterministic destruction: drop the ball just under the first destructible brick, moving
+    // up, and step until its HP is exhausted. destructibleLeft must fall by exactly one.
+    const destroy = await evalIn(`(()=>{
+      const bricks=window.__app.vausBricks();
+      const d=bricks.find(b=>!b.indestructible && !b.destroyed);
+      if(!d) return {ok:false};
+      const before=window.__app.vausState().destructibleLeft;
+      let steps=0;
+      while(window.__app.vausState().destructibleLeft===before && steps<16){
+        window.__app.vausSetBall(d.x+d.w/2, d.y+d.h+8, 0, -290);
+        window.__app.vausStep(50);
+        steps++;
+      }
+      return {ok:true, before, after:window.__app.vausState().destructibleLeft, steps};
+    })()`);
+    check('FG-042: ball destroys a weight-scaled destructible brick', destroy.ok && destroy.after === destroy.before - 1, `left ${destroy.before} → ${destroy.after} in ${destroy.steps} steps`);
+
+    // Indestructible brick (root/runtime) survives repeated hits.
+    const indes = await evalIn(`(()=>{
+      const i=window.__app.vausBricks().find(b=>b.indestructible && !b.destroyed);
+      if(!i) return {skip:true};
+      for(let k=0;k<6;k++){ window.__app.vausSetBall(i.x+i.w/2, i.y+i.h+8, 0, -290); window.__app.vausStep(50); }
+      const still=window.__app.vausBricks().find(b=>Math.abs(b.x-i.x)<0.5 && Math.abs(b.y-i.y)<0.5);
+      return {survived: !!still && !still.destroyed};
+    })()`);
+    check('FG-042: indestructible brick survives repeated hits', indes.skip === true || indes.survived === true, indes.skip ? '(no indestructible brick in this sample)' : '');
+
+    // The host view must be byte-for-byte the same object/state while the game runs.
+    const hostMid = await evalIn(`(()=>{const v=window.__vausHost;return {boxes:v.boxes.length,mode:v.mode,focusNull:v.focus==null};})()`);
+    check('FG-042: host view untouched during play', hostMid.boxes === hostBefore.boxes && hostMid.mode === hostBefore.mode && hostMid.focusNull === hostBefore.focusNull, `boxes ${hostBefore.boxes}→${hostMid.boxes}, mode ${hostMid.mode}`);
+
+    // Quit restores the exact prior view — same object, boxes, mode — with no rebuild.
+    await evalIn(`window.__app.vausQuit()`);
+    await sleep(40);
+    const afterQuit = await evalIn(`(()=>({active:window.__app.vausActive(), same:window.__fv===window.__vausHost, boxes:window.__fv.boxes.length, mode:window.__fv.mode}))()`);
+    check('FG-042: quit deactivates the game', afterQuit.active === false);
+    check('FG-042: quit restores the exact host view (same object/boxes/mode)', afterQuit.same && afterQuit.boxes === hostBefore.boxes && afterQuit.mode === hostBefore.mode, `same=${afterQuit.same}, boxes=${afterQuit.boxes}, mode=${afterQuit.mode}`);
+
+    // No leak: a second quit + a stray key after exit are harmless no-ops.
+    const noLeak = await evalIn(`(()=>{try{window.__app.vausQuit();return {ok:true};}catch(e){return {ok:false,err:String(e)};}})()`);
+    check('FG-042: second quit is a harmless no-op', noLeak.ok === true, noLeak.err || '');
+    await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 }, sessionId);
+    await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 }, sessionId);
+    const afterStray = await evalIn(`window.__app.vausActive()===false && !!(window.__fv && window.__fv.boxes)`);
+    check('FG-042: stray key after quit neither reactivates nor crashes', afterStray === true);
+
+    // gameConfig persists across sessions via localStorage.
+    await evalIn(`(()=>{const c=JSON.parse(localStorage.getItem('fv-vaus-config')||'{}');c.lives=7;localStorage.setItem('fv-vaus-config',JSON.stringify(c));})()`);
+    await evalIn(`window.__app.startVaus(); window.__app.vausBegin();`);
+    const persisted = await evalIn(`window.__app.vausState().lives`);
+    check('FG-042: gameConfig (lives) persists via localStorage', persisted === 7, `lives=${persisted}`);
+    await evalIn(`window.__app.vausQuit()`);
+  }
+
 } catch (e: any) {
   failures++;
   console.log('  ✗ harness error —', e?.message || e);
