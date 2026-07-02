@@ -107,68 +107,79 @@ const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     `${(bytes.length / 1e6).toFixed(1)}MB (live ≈ ${(live / 1e6).toFixed(1)}MB, garbage ${(GARBAGE / 1e6).toFixed(1)}MB)`);
 }
 
-// ── Tier B: ground-truth dominator / retained-size assertions (pending FG-058/FG-059) ────────
+// ── Tier B: ground-truth against the heap model (FG-058) + dominators (FG-059) ───────────────
+// B1 needs only the parser + HeapModel (FG-058). B2 auto-activates once the model also exposes
+// retainedOf/dominatorParentOf (FG-059). Until src/parse-hprof.js exists, both are pending.
 if (!existsSync('src/parse-hprof.js')) {
   console.log('  · Tier B pending — src/parse-hprof.js not implemented yet (FG-058/FG-059).');
-  console.log('    The ground-truth oracle is ready: EXCLUSIVE, SHARED (no double-count), CYCLE');
-  console.log('    (terminates), CHAIN (monotone), GARBAGE (absent), conservation of retained size.');
+  console.log('    Oracle ready: object graph (refs/roots/shallow), then retained/dominators —');
+  console.log('    EXCLUSIVE, SHARED (no double-count), CYCLE, CHAIN, GARBAGE, conservation.');
 } else {
   const SLACK = 8192; // object/array header + alignment overhead per object
   const { parseHprof } = await import('../src/parse-hprof.js' as any);
   const p: any = parseHprof(bytes);
   const heap = p?.heap;
 
-  check('Tier B: capabilities.kind === "heap"', p?.capabilities?.kind === 'heap');
-  check('Tier B: GC roots + objects present', !!heap && heap.roots?.length > 0 && heap.objectCount > 0,
-    heap ? `roots=${heap.roots?.length}, objects=${heap.objectCount}` : 'no heap model');
+  // ── B1: object graph (FG-058) ──────────────────────────────────────────────────────────────
+  check('B1: capabilities.kind === "heap"', p?.capabilities?.kind === 'heap');
+  check('B1: objects + GC roots present', !!heap && heap.objectCount > 0 && heap.roots?.length > 0,
+    heap ? `objects=${heap.objectCount}, roots=${heap.roots?.length}` : 'no heap model');
+  check('B1: totalShallow covers the live payload',
+    heap.totalShallow >= EXCL + SHARED + 2 * CYCLE + C1SZ + C2SZ + C3SZ, `totalShallow=${heap.totalShallow}`);
 
   const classes = heap.byClass();
-  const cls = (suffix: string) => classes.find((c: any) => c.name.endsWith(suffix));
+  const cls = (s: string) => classes.find((c: any) => c.name.endsWith(s));
   for (const n of ['ExclusiveOwner', 'SharerA', 'SharerB', 'SharedPayload', 'ChainLink', 'CycleNode']) {
-    check(`Tier B: class present — ${n}`, !!cls(n), cls(n) ? `retained=${cls(n).retained}` : 'missing');
+    check(`B1: class present — ${n}`, !!cls(n), cls(n) ? `count=${cls(n).count}` : 'missing');
   }
 
-  // EXCLUSIVE — the exclusively-owned array is fully attributed to its single owner.
-  const exclId = heap.objectsOfClass('ExclusiveOwner')[0];
-  const exclRet = heap.retainedOf(exclId);
-  check('Tier B: ExclusiveOwner retains its array (retained ≈ EXCL)',
-    exclRet >= EXCL && exclRet <= EXCL + SLACK, `retained=${exclRet}, EXCL=${EXCL}`);
+  const first = (s: string) => heap.objectsOfClass(s)[0];
+  const byteArrays: number[] = heap.objectsOfClass('byte[]');
 
-  // SHARED — the decisive test: the shared payload is dominated by NEITHER sharer (common
-  // dominator is the root), so neither sharer's retained size includes it (no double-count).
-  const aId = heap.objectsOfClass('SharerA')[0];
-  const bId = heap.objectsOfClass('SharerB')[0];
-  const sharedArrId = heap.objectsOfClass('SharedPayload')[0];
-  const domOfShared = heap.dominatorParentOf(heap.retainedOf ? sharedArrId : sharedArrId);
-  check('Tier B: shared payload not dominated by either sharer',
-    domOfShared !== aId && domOfShared !== bId, `idom(shared)=${domOfShared}, a=${aId}, b=${bId}`);
-  check('Tier B: SHARED counted once — neither sharer retains it',
-    heap.retainedOf(aId) < SHARED && heap.retainedOf(bId) < SHARED,
-    `retained(a)=${heap.retainedOf(aId)}, retained(b)=${heap.retainedOf(bId)}, SHARED=${SHARED}`);
+  // EXCLUSIVE — a byte[] of ~EXCL exists (the exclusively-owned payload).
+  check('B1: exclusively-owned byte[EXCL] present',
+    byteArrays.some((id) => heap.shallowOf(id) >= EXCL && heap.shallowOf(id) <= EXCL + SLACK),
+    `byte[] instances=${byteArrays.length}`);
 
-  // CHAIN — retained monotonically decreases down the chain, each ≥ its own array.
-  const chainRet = heap.objectsOfClass('ChainLink').map((id: number) => heap.retainedOf(id)).sort((x: number, y: number) => y - x);
-  check('Tier B: chain retained is monotone (C1 > C2 > C3)',
-    chainRet.length === 3 && chainRet[0] > chainRet[1] && chainRet[1] > chainRet[2], `${chainRet.join(' > ')}`);
-  check('Tier B: chain links each retain ≥ their own array', chainRet[2] >= C3SZ, `smallest=${chainRet[2]}, C3=${C3SZ}`);
+  // SHARED — SharerA and SharerB reference the SAME SharedPayload instance (structural proof of sharing).
+  const aId = first('SharerA'), bId = first('SharerB'), spId = first('SharedPayload');
+  check('B1: both sharers reference the same shared payload',
+    heap.refsOf(aId).includes(spId) && heap.refsOf(bId).includes(spId), `shared=${spId}`);
 
-  // CYCLE — computation terminated (reaching here proves it); entry node retains both arrays.
-  const cyc = heap.objectsOfClass('CycleNode').map((id: number) => heap.retainedOf(id)).sort((x: number, y: number) => y - x);
-  check('Tier B: cycle terminates with finite retained sizes', cyc.length === 2 && cyc.every((v: number) => v > 0 && Number.isFinite(v)), `${cyc.join(', ')}`);
-  check('Tier B: cycle entry node retains both cycle arrays (≥ 2·CYCLE)', cyc[0] >= 2 * CYCLE, `entry=${cyc[0]}, 2·CYCLE=${2 * CYCLE}`);
+  // GARBAGE — no ~5 MB byte[] survived a live dump (largest live byte[] is EXCL ≈ 4 MB).
+  check('B1: dropped garbage byte[GARBAGE] absent',
+    !byteArrays.some((id) => heap.shallowOf(id) >= GARBAGE - 64),
+    `max byte[]=${byteArrays.length ? Math.max(...byteArrays.map((id) => heap.shallowOf(id))) : 0}`);
 
-  // GARBAGE — the dropped 5 MB array must be absent from a live dump.
-  const anyGarbage = heap.byClass().some((c: any) => c.name.includes('[B') /* byte[] */ && c.shallow >= GARBAGE);
-  check('Tier B: dropped garbage array is absent (live dump)', !anyGarbage);
+  // INTEGRITY — every outgoing reference resolves to a real object index.
+  let bad = 0; const N = heap.objectCount;
+  for (let id = 0; id < N; id++) for (const t of heap.refsOf(id)) if (!(t >= 0 && t < N)) bad++;
+  check('B1: reference graph integrity (all targets resolve)', bad === 0, `${bad} dangling`);
 
-  // CONSERVATION — retained size of the super-root's direct children sums to total live shallow
-  // (nothing lost, nothing double-counted — the global correctness check).
-  const topRet = heap.roots
-    .filter((id: number) => heap.dominatorParentOf(id) === -1)
-    .reduce((s: number, id: number) => s + heap.retainedOf(id), 0);
-  check('Tier B: retained size conserves total shallow (no loss / double-count)',
-    Math.abs(topRet - heap.totalShallow) <= SLACK * heap.objectCount / 1000 || topRet === heap.totalShallow,
-    `Σretained(top)=${topRet}, totalShallow=${heap.totalShallow}`);
+  // ── B2: dominators + retained size (FG-059) ─────────────────────────────────────────────────
+  if (typeof heap.retainedOf === 'function' && typeof heap.dominatorParentOf === 'function') {
+    const exclRet = heap.retainedOf(first('ExclusiveOwner'));
+    check('B2: ExclusiveOwner retained ≈ EXCL', exclRet >= EXCL && exclRet <= EXCL + SLACK, `retained=${exclRet}`);
+
+    const domShared = heap.dominatorParentOf(spId);
+    check('B2: shared payload dominated by neither sharer', domShared !== aId && domShared !== bId, `idom(shared)=${domShared}`);
+    check('B2: SHARED counted once — neither sharer retains it',
+      heap.retainedOf(aId) < SHARED && heap.retainedOf(bId) < SHARED,
+      `ret(a)=${heap.retainedOf(aId)}, ret(b)=${heap.retainedOf(bId)}`);
+
+    const chain = heap.objectsOfClass('ChainLink').map((id: number) => heap.retainedOf(id)).sort((x: number, y: number) => y - x);
+    check('B2: chain retained monotone (C1 > C2 > C3)', chain.length === 3 && chain[0] > chain[1] && chain[1] > chain[2], chain.join(' > '));
+
+    const cyc = heap.objectsOfClass('CycleNode').map((id: number) => heap.retainedOf(id)).sort((x: number, y: number) => y - x);
+    check('B2: cycle terminates, finite retained', cyc.length === 2 && cyc.every((v: number) => v > 0 && Number.isFinite(v)), cyc.join(', '));
+    check('B2: cycle entry retains both arrays (≥ 2·CYCLE)', cyc[0] >= 2 * CYCLE, `entry=${cyc[0]}`);
+
+    const topRet = heap.roots.filter((id: number) => heap.dominatorParentOf(id) === -1).reduce((s: number, id: number) => s + heap.retainedOf(id), 0);
+    check('B2: retained conserves total shallow', topRet === heap.totalShallow || Math.abs(topRet - heap.totalShallow) <= SLACK,
+      `Σtop=${topRet}, total=${heap.totalShallow}`);
+  } else {
+    console.log('  · B2 pending — retainedOf/dominatorParentOf not on the heap model yet (FG-059).');
+  }
 }
 
 console.log(`\n${fail === 0 ? 'PASS' : 'FAIL'}  parse-hprof-test — ${pass} passed, ${fail} failed`);

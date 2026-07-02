@@ -824,6 +824,16 @@
     }
 
     function loadProfile(p, label) {
+      // FG-058: heap-dump profiles (capabilities.kind === 'heap') are an object graph, not
+      // stacks — the sampled view path (threads / weights / CallNodeTable) doesn't apply, and a
+      // heap profile carries no `threads`. The retained-size view is FG-060; until then,
+      // acknowledge the parse instead of crashing the sampled renderer on a thread-less profile.
+      if (p && p.capabilities && p.capabilities.kind === 'heap') {
+        document.getElementById('empty').style.display = 'none';
+        const n = (p.heap && p.heap.objectCount != null) ? p.heap.objectCount.toLocaleString() : '?';
+        info.textContent = `${label}: heap dump parsed — ${n} objects. Retained-size view lands in a later step (FG-060).`;
+        return;
+      }
       _baseProfile = p;
       // FG-044: apply any already-loaded source maps to the incoming profile.
       profile = srcMaps.size > 0 ? remapProfile(p, srcMaps) : p;
