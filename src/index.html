@@ -124,6 +124,11 @@
     #pal-list { max-height: 50vh; overflow: auto; padding: 5px; }
     #pal-list .row { padding: 7px 11px; border-radius: 6px; color: var(--fg); font-size: 13px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     #pal-list .row.sel { background: var(--accent); color: var(--on-accent); }
+    /* samples dropdown (drops up from the status bar) */
+    #samplemenu { position: fixed; display: none; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 8px 30px rgba(0,0,0,0.5); padding: 5px; z-index: 12; max-height: 60vh; overflow: auto; }
+    #samplemenu.on { display: block; }
+    #samplemenu .srow { padding: 6px 12px; border-radius: 5px; cursor: pointer; white-space: nowrap; color: var(--fg); font-size: 13px; }
+    #samplemenu .srow:hover { background: var(--accent); color: var(--on-accent); }
     #pal-list .empty { padding: 10px 12px; color: var(--faint); font-size: 12px; }
     /* profile source picker overlay (FG-028 generalized) */
     #connect { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; background: rgba(0,0,0,0.4); z-index: 11; }
@@ -165,7 +170,8 @@
   <div id="ctxmenu"></div>
   <!-- FG-025 pass 3: brush info overlay — top windowed functions while a lane brush is active -->
   <div id="brushinfo"></div>
-  <div id="empty">drop a profile  ·  ⌘K commands  ·  ⌘F search</div>
+  <div id="empty">drop a profile  ·  <b>samples ▾</b> below  ·  ⌘K commands  ·  ⌘F search</div>
+  <div id="samplemenu"></div>
   <div id="drop">drop a profile — pprof · .cpuprofile · folded · speedscope (.gz ok)</div>
   <!-- FG-030: source-line panel -->
   <div id="srcpanel">
@@ -192,6 +198,7 @@
       <button id="m-graph" data-mode="graph">Aggregated</button>
       <button id="m-sandwich" data-mode="sandwich">Sandwich</button>
     </span>
+    <span class="tok" id="st-samples" title="load a bundled sample profile">samples ▾</span>
     <span class="tok" id="st-viewtype" title="view type — click to cycle (flame → radial → graph)">flame</span>
     <span class="tok" id="st-weight" title="weight type — click to cycle">—</span>
     <span class="tok" id="st-thread" title="thread selector — click to cycle" style="display:none">all threads</span>
@@ -1445,6 +1452,24 @@
     document.getElementById('st-legend').onclick = toggleLegend;
     document.getElementById('st-help').onclick = toggleHelp;
     document.getElementById('hintk').onclick = openPalette;
+
+    // Visible samples dropdown (discoverable without ⌘K). Drops up from the status bar.
+    const stSamples = document.getElementById('st-samples'), sampleMenu = document.getElementById('samplemenu');
+    const closeSampleMenu = () => sampleMenu.classList.remove('on');
+    stSamples.onclick = () => {
+      if (sampleMenu.classList.contains('on')) { closeSampleMenu(); return; }
+      sampleMenu.replaceChildren();
+      for (const [label, path] of SAMPLES) {
+        const d = document.createElement('div'); d.className = 'srow'; d.textContent = label;
+        d.onmousedown = (e) => { e.preventDefault(); closeSampleMenu(); loadSample(path); };
+        sampleMenu.appendChild(d);
+      }
+      const r = stSamples.getBoundingClientRect();
+      sampleMenu.style.left = Math.round(r.left) + 'px';
+      sampleMenu.style.bottom = Math.round(window.innerHeight - r.top + 6) + 'px';
+      sampleMenu.classList.add('on');
+    };
+    document.addEventListener('mousedown', (e) => { if (sampleMenu.classList.contains('on') && !sampleMenu.contains(e.target) && e.target !== stSamples) closeSampleMenu(); });
     function showCoach() {
       try { if (localStorage.getItem('fv-coached')) return; } catch { return; }
       const c = document.getElementById('coach');
@@ -1512,7 +1537,7 @@
       const inInput = /^(INPUT|SELECT|TEXTAREA)$/.test(document.activeElement?.tagName || '');
       if (e.key === '/' && !inInput) { e.preventDefault(); openSearch(); return; }
       if (e.key === '?' && !inInput) { e.preventDefault(); toggleHelp(); return; }
-      if (e.key === 'Escape') { hideMenu(); closePalette(); closeThemePicker(); closeConnect(); closeUrlDialog(); closeFuncList(); help.classList.remove('on'); srcPanel.classList.remove('on'); if (pill.classList.contains('on') && !searchEl.value) closeSearch(); if (view && !inInput) { view.resetZoom(); showDetail(false); _scheduleHashWrite(); } return; }
+      if (e.key === 'Escape') { hideMenu(); closePalette(); closeSampleMenu(); closeThemePicker(); closeConnect(); closeUrlDialog(); closeFuncList(); help.classList.remove('on'); srcPanel.classList.remove('on'); if (pill.classList.contains('on') && !searchEl.value) closeSearch(); if (view && !inInput) { view.resetZoom(); showDetail(false); _scheduleHashWrite(); } return; }
       if (inInput || !view || !profile) return;
       const caps = (VIEWS[viewType].capabilities || { modes: ['graph', 'chart', 'sandwich'] }).modes;
       if (e.key === '1' && caps.includes('chart')) setMode('chart');
