@@ -514,7 +514,7 @@
     const detail = document.getElementById('detail'), stWeight = document.getElementById('st-weight'), stDiff = document.getElementById('st-diff'), stView = document.getElementById('st-viewtype');
     const showDetail = (b) => { detail.classList.toggle('on', !!b); updateSourcePanel(b); }; // slide-over + source panel on frame-select
     const VIEWS = { flame: FlameView, radial: RadialView, graph: GraphView, treemap: TreemapView }; // view-type registry (FG-038/039/051/061)
-    const SAMPLES = [['vert.x (real · timed · deep)', 'samples/real-vertx.speedscope.json'], ['Node CPU (timed · simple)', 'samples/node.cpuprofile'], ['pprof (multi-metric)', 'samples/multi-value.pprof'], ['heap (alloc bytes/objects)', 'samples/alloc-heap.pprof'], ['5k samples (scale)', 'samples/scale-5000.cpuprofile']];
+    const SAMPLES = [['vert.x (real · timed · deep)', 'samples/real-vertx.speedscope.json'], ['Node CPU (timed · simple)', 'samples/node.cpuprofile'], ['pprof (multi-metric)', 'samples/multi-value.pprof'], ['heap (alloc bytes/objects)', 'samples/alloc-heap.pprof'], ['5k samples (scale)', 'samples/scale-5000.cpuprofile'], ['heap dump — retained sizes (hprof)', 'samples/demo-heap.hprof']];
     let view, profile, mode = 'graph', fileLabel = '', viewType = 'flame', collapsed = true;
     // FG-053: active thread selection. 'all' means the merged view (default when threads>1);
     // a number means that real thread by index. Single-thread profiles always use index 0.
