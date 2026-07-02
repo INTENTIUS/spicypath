@@ -174,8 +174,11 @@ if (!existsSync('src/parse-hprof.js')) {
     check('B2: cycle terminates, finite retained', cyc.length === 2 && cyc.every((v: number) => v > 0 && Number.isFinite(v)), cyc.join(', '));
     check('B2: cycle entry retains both arrays (≥ 2·CYCLE)', cyc[0] >= 2 * CYCLE, `entry=${cyc[0]}`);
 
-    const topRet = heap.roots.filter((id: number) => heap.dominatorParentOf(id) === -1).reduce((s: number, id: number) => s + heap.retainedOf(id), 0);
-    check('B2: retained conserves total shallow', topRet === heap.totalShallow || Math.abs(topRet - heap.totalShallow) <= SLACK,
+    // Every object lands in exactly one super-root subtree, so Σ retained over the super-root's
+    // direct children (idom === -1) must equal total shallow — nothing lost or double-counted.
+    let topRet = 0;
+    for (let id = 0; id < heap.objectCount; id++) if (heap.dominatorParentOf(id) === -1) topRet += heap.retainedOf(id);
+    check('B2: retained conserves total shallow', topRet === heap.totalShallow,
       `Σtop=${topRet}, total=${heap.totalShallow}`);
   } else {
     console.log('  · B2 pending — retainedOf/dominatorParentOf not on the heap model yet (FG-059).');

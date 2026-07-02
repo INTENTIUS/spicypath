@@ -62,7 +62,11 @@ public class HprofWorkload {
   static final class ChainLink { byte[] payload; ChainLink next; ChainLink(int n) { payload = new byte[n]; } }
   static final class CycleNode { byte[] payload = new byte[CYCLE]; CycleNode peer; }
 
-  public static void main(String[] args) throws Exception {
+  // Build the graph in its OWN frame so that, once it returns, no local variable references any
+  // of these objects — the graph is then reachable ONLY through the static field ROOT (a single
+  // GC root). If we built it inline in main(), the live locals (r, shared, x, y, …) would each be
+  // a thread-frame GC root at dump time, flattening the dominator tree (every object a root).
+  static void build() {
     Root r = new Root();
 
     // Exclusive ownership.
@@ -79,13 +83,17 @@ public class HprofWorkload {
     c1.next.next = new ChainLink(C3SZ);
     r.chain = c1;
 
-    // Reference cycle x ⇄ y; x is the entry (reachable directly from ROOT).
+    // Reference cycle x ⇄ y; x is the entry (reachable via ROOT.cycle).
     CycleNode x = new CycleNode();
     CycleNode y = new CycleNode();
     x.peer = y; y.peer = x;
     r.cycle = x;
 
-    ROOT = r; // publish as a GC root
+    ROOT = r; // publish as a GC root (static field)
+  }
+
+  public static void main(String[] args) throws Exception {
+    build(); // its frame (and all local refs) is gone before we dump
 
     // Unreachable garbage: touch it so it can't be scalarized away, then drop + GC.
     byte[] garbage = new byte[GARBAGE];

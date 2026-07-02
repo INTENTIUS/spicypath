@@ -1,6 +1,6 @@
 // HPROF binary heap-dump parser → HeapModel (object graph). Pure ES module, no node: imports.
-// Implements FG-058 (object graph: objects, references, GC roots, shallow sizes, per-class histogram).
-// Dominators / retained sizes (FG-059) are NOT included here.
+// Implements FG-058 (object graph: objects, references, GC roots, shallow sizes, per-class histogram)
+// + FG-059 (retainedOf/dominatorParentOf, computed lazily via src/heap-dominators.js).
 //
 // Format: big-endian, idSize=8 (JDK 25 default).
 //   Header: NUL-terminated version string, u4 identifierSize, u8 timestamp.
@@ -31,6 +31,8 @@
 //
 // Shallow sizes: instances → nBytes (field bytes, close to instanceSize); object arrays → nElems*idSize;
 // primitive arrays → nElems * elemTypeSize. (SLACK in the test covers any header constant differences.)
+
+import { computeHeapDominators } from './heap-dominators.js'; // FG-059: dominators + retained size
 
 // Basic type code sizes (bytes). Type code 2 = object ref (idSize, handled separately).
 const TYPE_SIZE = { 4: 1, 5: 2, 6: 4, 7: 8, 8: 1, 9: 2, 10: 4, 11: 8 };
@@ -67,6 +69,8 @@ export function parseHprof(bytes) {
   // classObjId (native id) → { superId, instanceFieldTypes: number[] }
   // instanceFieldTypes: ordered list of type codes for the class's OWN instance fields
   const classMeta = new Map();
+  // Native ids referenced by object-typed static fields — GC roots (mapped to indices in pass 2).
+  const staticRootNativeIds = [];
 
   // Heap-dump body ranges (start offset, end offset) in the bytes array
   const heapSegments = []; // [{start, end}]
@@ -114,12 +118,14 @@ export function parseHprof(bytes) {
               if (cpType === 2) p += idSize;
               else p += (TYPE_SIZE[cpType] ?? 4);
             }
-            // static fields: u2 nStatic, then [id nameStrId, u1 type, value]
+            // static fields: u2 nStatic, then [id nameStrId, u1 type, value]. An object-typed
+            // static field is a GC root (the class holds the referenced object alive) — collect
+            // its target so much of a real heap's object graph (held by statics) is reachable.
             const nStatic = dv.getUint16(p, false); p += 2;
             for (let i = 0; i < nStatic; i++) {
               p += idSize; // nameStringId
               const fType = bytes[p]; p++;
-              if (fType === 2) p += idSize;
+              if (fType === 2) { const t = readId(dv, p, idSize); if (t !== 0) staticRootNativeIds.push(t); p += idSize; }
               else p += (TYPE_SIZE[fType] ?? 4);
             }
             // instance fields: u2 nInstance, then [id nameStrId, u1 type]
@@ -386,6 +392,12 @@ export function parseHprof(bytes) {
   let totalShallow = 0;
   for (let i = 0; i < N; i++) totalShallow += shallows[i];
 
+  // Object-typed static fields are GC roots too — fold their (now-mappable) targets in.
+  for (const nativeId of staticRootNativeIds) {
+    const idx = idToIdx.get(nativeId);
+    if (idx !== undefined) rootSet.add(idx);
+  }
+
   // Deduplicated roots array
   const roots = [...rootSet];
 
@@ -443,6 +455,22 @@ export function parseHprof(bytes) {
     className(id) {
       const ci = classIdxOf[id];
       return ci >= 0 ? classNames[ci] : '';
+    },
+
+    // FG-059: dominators + retained size, computed once on first use (a histogram-only caller
+    // never pays for it). `_dom` memoizes { idom, retained, superRoot }.
+    _dom: null,
+    _ensureDom() {
+      if (!this._dom) this._dom = computeHeapDominators(N, roots, (id) => refsPerObj[id] ?? [], (id) => shallows[id] ?? 0);
+      return this._dom;
+    },
+    retainedOf(id) {
+      return this._ensureDom().retained[id] ?? 0;
+    },
+    dominatorParentOf(id) {
+      const d = this._ensureDom();
+      const p = d.idom[id];
+      return p === d.superRoot ? -1 : p;
     },
   };
 
