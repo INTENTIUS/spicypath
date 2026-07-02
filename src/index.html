@@ -335,7 +335,7 @@
     // any of these is treated as a profile; everything else is a candidate source file.
     // Every extension src/ingest.js recognizes — a dropped file matching one is a profile,
     // not source. Keep in sync with ingest.js (incl. .otlp and .gecko/.json via the sniff).
-    const PROFILE_EXTS = new Set(['.pprof', '.pb', '.prof', '.otlp', '.cpuprofile', '.json', '.gz', '.folded', '.collapsed', '.txt', '.perf', '.stacks']);
+    const PROFILE_EXTS = new Set(['.pprof', '.pb', '.prof', '.otlp', '.cpuprofile', '.json', '.gz', '.folded', '.collapsed', '.txt', '.perf', '.stacks', '.hprof']);
     function looksLikeProfile(file) {
       const name = file.name.toLowerCase();
       if (name.endsWith('.speedscope.json') || name.endsWith('.cpuprofile')) return true;
@@ -719,9 +719,11 @@
       requestAnimationFrame(() => { view.draw(); });
     }
     function applyCaps() { // disable mode buttons the active view type can't do
+      const isHeap = !!(profile && profile.capabilities && profile.capabilities.kind === 'heap');
       const caps = (VIEWS[viewType].capabilities || { modes: ['graph', 'chart', 'sandwich'] }).modes;
-      bChart.disabled = !caps.includes('chart') || !(profile && profile.capabilities.hasTiming);
-      bSand.disabled = !caps.includes('sandwich');
+      // FG-060: heap profiles have no timing and no sandwich; only the icicle (graph mode) applies.
+      bChart.disabled = isHeap || !caps.includes('chart') || !(profile && profile.capabilities.hasTiming);
+      bSand.disabled  = isHeap || !caps.includes('sandwich');
       stView.textContent = viewType;
     }
 
@@ -781,8 +783,12 @@
     function setViewType(t) {
       if (!VIEWS[t] || !profile) return;
       viewType = t;
+      const isHeap = !!(profile.capabilities && profile.capabilities.kind === 'heap');
       const caps = (VIEWS[t].capabilities || { modes: ['graph', 'chart', 'sandwich'] }).modes;
       if (!caps.includes(mode)) mode = 'graph'; // coerce to a supported mode (also exits diff — rebuild is from the original profile)
+      // FG-060: heap only supports flame + radial (both consume the same dominator-tree ct).
+      // Call-graph (GraphView) would try to build a call-graph from a heap's empty threads — skip.
+      if (isHeap && t === 'graph') { viewType = 'flame'; }
       applyCaps(); rebuild(); setMode(mode); updateInfo();
       if (!_restoringHash) _scheduleHashWrite();
     }
@@ -791,6 +797,12 @@
       const isDiff = view && view.mode === 'diff';
       stDiff.style.display = isDiff ? '' : 'none';
       if (!view || !profile || isDiff) return; // diff keeps its own "diff vs …" label (set on compare)
+      // FG-060: heap profiles show object count + total retained size instead of the sampled info.
+      if (profile.capabilities && profile.capabilities.kind === 'heap') {
+        const n = profile.heap.objectCount.toLocaleString();
+        info.textContent = `${fileLabel} · heap · ${n} objects · ${view.totalLabel()} total`;
+        return;
+      }
       const t = profile.capabilities.hasTiming ? 'timed' : 'aggregated';
       // FG-053: show the active thread name when in a per-thread view.
       let threadPart = '';
@@ -824,26 +836,26 @@
     }
 
     function loadProfile(p, label) {
-      // FG-058: heap-dump profiles (capabilities.kind === 'heap') are an object graph, not
-      // stacks — the sampled view path (threads / weights / CallNodeTable) doesn't apply, and a
-      // heap profile carries no `threads`. The retained-size view is FG-060; until then,
-      // acknowledge the parse instead of crashing the sampled renderer on a thread-less profile.
-      if (p && p.capabilities && p.capabilities.kind === 'heap') {
-        document.getElementById('empty').style.display = 'none';
-        const n = (p.heap && p.heap.objectCount != null) ? p.heap.objectCount.toLocaleString() : '?';
-        info.textContent = `${label}: heap dump parsed — ${n} objects. Retained-size view lands in a later step (FG-060).`;
-        return;
-      }
+      // FG-060: heap profiles now flow through the normal view path (the FG-058 placeholder
+      // guard is removed). parse-hprof.js supplies threads:[], metrics:[], stackTable, funcTable,
+      // and stringTable so the sampled-path helpers (funcName, colorForFunc, info bar …) all
+      // work.  buildCallNodeTable branches on capabilities.kind==='heap' and builds the ct from
+      // the dominator tree.  Guards below coerce mode + disable unsupported buttons.
       _baseProfile = p;
       // FG-044: apply any already-loaded source maps to the incoming profile.
-      profile = srcMaps.size > 0 ? remapProfile(p, srcMaps) : p;
+      // FG-060: heap profiles have no frameTable so source-map remapping is a no-op.
+      const _isHeapProfile = !!(p.capabilities && p.capabilities.kind === 'heap');
+      profile = (srcMaps.size > 0 && !_isHeapProfile) ? remapProfile(p, srcMaps) : p;
       fileLabel = label;
       liveSource = null; stLive.classList.remove('on'); // clear the live indicator by default; doFetchAdapter re-sets it after this returns
       document.getElementById('empty').style.display = 'none';
       wtSel.innerHTML = p.capabilities.weightTypes.map((t) => `<option>${t}</option>`).join('');
       wtSel.value = p.capabilities.weightTypes.includes('cpu_nanos') ? 'cpu_nanos' : p.capabilities.weightTypes[0];
       if (mode === 'chart' && !p.capabilities.hasTiming) mode = 'graph';
+      // FG-060: heap has no sandwich or chart; coerce to graph (the icicle runs in graph mode).
+      if (p.capabilities.kind === 'heap' && (mode === 'chart' || mode === 'sandwich')) mode = 'graph';
       // FG-053: default to 'all threads' (merged) when threads.length > 1 so nothing is hidden.
+      // threads:[] for heap profiles → activeThread stays 0; _resolveThreadArg() returns 0.
       activeThread = profile.threads.length > 1 ? 'all' : 0;
       // Check if there's a hash state to restore (only on initial load, not on subsequent loads)
       const pendingState = _pendingHashState;

@@ -10,6 +10,18 @@ linkable — the entries record *what* shipped and *why*, not the original commi
 
 ## Enhancements (post-M4)
 
+- FG-060 Heap dumps (HPROF) — a second analysis family. spicypath now reads a JVM `.hprof` heap
+  dump: `src/parse-hprof.js` parses the binary object graph (FG-058), `src/heap-dominators.js`
+  computes the dominator tree + retained sizes (FG-059), and the shell renders it as a
+  **retained-size icicle** on the existing renderer (FG-060) — biggest retainers widest, nesting =
+  "dominates", coloured by class/package, with the detail panel's stack repurposed as the retainer
+  path. The bet paid off: `buildCallNodeTable` gains a `kind:'heap'` branch that projects the
+  dominator tree into the same call-node-table shape (retained = weight, which is monotone up the
+  tree), so FlameView draws it with no renderer changes. Heap profiles route through the normal view
+  path with `capabilities.kind:'heap'` gating the sampled-only chrome (threads, chart, sandwich);
+  the sampled path is untouched. Validated end-to-end against a ground-truth heap fixture
+  (`test/gen/HprofWorkload.java`): exclusive/shared/cycle/chain retention + conservation of retained
+  size all hold. (Class histograms and heap diff are possible follow-ons.)
 - FG-042 Vaus mode (hidden easter egg) — a brick-breaker where the flame-graph boxes are the
   bricks (toughness scales with box weight; root + runtime/gc frames are the indestructible back
   wall). Built as `GameView extends BaseView` (`src/view-vaus.js`) over a pure, DOM-free sim

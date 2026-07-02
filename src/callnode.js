@@ -56,8 +56,66 @@ export function mergedThread(p) {
   }
 }
 
+// FG-060: build the call-node table from the heap's dominator tree.
+// Every object is a node; parent = immediate dominator; func = class index.
+// total = retained size (monotone up the tree → icicle width math works).
+// self  = shallow size.
+// grandTotal = Σ retained(roots) = totalShallow (conservation law from FG-059).
+function _buildHeapCt(p) {
+  const heap = p.heap;
+  const N = heap.objectCount;
+
+  const frame  = new Array(N);
+  const func   = new Array(N);
+  const prefix = new Array(N);
+  const self   = new Array(N);
+  const total  = new Array(N);
+  const depth  = new Array(N);
+
+  for (let i = 0; i < N; i++) {
+    const ci   = heap.classIndexOf(i);
+    frame[i]   = ci; // frame === func for the heap ct (no separate frameTable layer)
+    func[i]    = ci;
+    prefix[i]  = heap.dominatorParentOf(i); // -1 = forest root (idom = superRoot)
+    self[i]    = heap.shallowOf(i);
+    total[i]   = heap.retainedOf(i);
+  }
+
+  // depths — parents always have a lower object id in practice but we can't assume
+  // topological order from the object id, so iterate until stable (objects are ≤10^5).
+  // One pass suffices if we process in ascending id order AND parents precede children,
+  // which the dominator tree guarantees only when dominators are numbered before
+  // their dominated nodes — not generally true for object ids.  Two-pass is safe.
+  depth.fill(0);
+  for (let iter = 0; iter < 2; iter++) {
+    for (let i = 0; i < N; i++) {
+      depth[i] = prefix[i] < 0 ? 0 : depth[prefix[i]] + 1;
+    }
+  }
+
+  // children lists
+  const children = Array.from({ length: N }, () => []);
+  const roots = [];
+  for (let i = 0; i < N; i++) {
+    if (prefix[i] < 0) roots.push(i);
+    else children[prefix[i]].push(i);
+  }
+
+  // sort left-heavy (largest retained first)
+  const byTotal = (a, b) => total[b] - total[a];
+  for (let i = 0; i < N; i++) children[i].sort(byTotal);
+  roots.sort(byTotal);
+
+  const grandTotal = heap.totalShallow; // = Σ retained(roots) by conservation
+
+  return { frame, func, prefix, depth, self, total, children, roots, grandTotal };
+}
+
 // FG-053: threadIndex may be a number (real thread) or a Thread object (e.g. mergedThread).
 export function buildCallNodeTable(p, threadIndex, weightType) {
+  // FG-060: heap profiles supply their own dominator-tree ct; the sampled path does not apply.
+  if (p && p.capabilities && p.capabilities.kind === 'heap') return _buildHeapCt(p);
+
   const st = p.stackTable;
   const n = st.frame.length;
   const frame = st.frame.slice();

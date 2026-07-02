@@ -474,8 +474,40 @@ export function parseHprof(bytes) {
     },
   };
 
+  // FG-060: add a dominator-tree lookup so callnode.js can map object id → class index.
+  // classIdxOf is already populated above (dense index per object into classNames[]).
+  heap.classIndexOf = (id) => (id >= 0 && id < N) ? classIdxOf[id] : -1;
+
+  // FG-060: synthetic sampled-compatible surface so FlameView / funcName / colorForFunc work
+  // without changes.  One entry per class (matching classNames[]); objects are nodes in the
+  // dominator-tree ct, so func[node] === classIndexOf(node) maps node → class slot.
+  //   stringTable  = the class-name array (funcName reads stringTable[funcTable.name[func]])
+  //   funcTable    = { name:[0..C-1], file:[-1…], line:[-1…] } — identity mapping (name[i]=i)
+  //   threads      = []  (heap has no sampled-call threads; _resolveThreadArg returns 0)
+  //   metrics      = []  (no metric lanes)
+  //   capabilities.weightTypes = ['retained_bytes'] only (shallow is NOT monotone; it shows as
+  //                              `self` in the detail panel)
+  //   capabilities.kind        = 'heap'  (already set; keep; guards every heap branch)
+  const C = classNames.length;
+  const stringTable = classNames.slice(); // a copy; funcName(p, ci) === classNames[ci]
+  const funcTable = {
+    name: Array.from({ length: C }, (_, i) => i), // name[i] = i → stringTable[i] = classNames[i]
+    file: new Array(C).fill(-1),                   // no source file for heap classes
+    line: new Array(C).fill(-1),                   // no source line
+  };
+
+  // stackTable is not used by the heap ct branch but several code paths (info bar,
+  // fuzz invariant, export) read stackTable.frame.length to get the node count.
+  // We set it to the object count so those paths report a meaningful number.
+  const stackTable = { frame: { length: N } };
+
   return {
-    capabilities: { kind: 'heap', weightTypes: [], hasTiming: false, isDiff: false },
+    capabilities: { kind: 'heap', weightTypes: ['retained_bytes'], hasTiming: false, isDiff: false },
+    stringTable,
+    funcTable,
+    stackTable,
+    threads: [],
+    metrics: [],
     heap,
   };
 }

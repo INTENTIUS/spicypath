@@ -183,6 +183,53 @@ if (!existsSync('src/parse-hprof.js')) {
   } else {
     console.log('  · B2 pending — retainedOf/dominatorParentOf not on the heap model yet (FG-059).');
   }
+
+  // ── B3: view bridge (FG-060) — heap ct via buildCallNodeTable ────────────────────────────────
+  // Exercises the new kind:'heap' branch: build a ct from the dominator tree, verify the
+  // grandTotal/roots/prefix/children invariants hold, and confirm funcName resolves to the class.
+  if (!existsSync('src/callnode.js')) {
+    console.log('  · B3 pending — src/callnode.js not present.');
+  } else {
+    const { buildCallNodeTable } = await import('../src/callnode.js' as any);
+    const { funcName } = await import('../src/colors.js' as any);
+
+    const ct = buildCallNodeTable(p, 0, 'retained_bytes');
+
+    check('B3: grandTotal === totalShallow', ct.grandTotal === heap.totalShallow,
+      `grandTotal=${ct.grandTotal}, totalShallow=${heap.totalShallow}`);
+    check('B3: roots.length > 0', ct.roots.length > 0, `roots=${ct.roots.length}`);
+    check('B3: grandTotal > 0', ct.grandTotal > 0, `grandTotal=${ct.grandTotal}`);
+
+    // ExclusiveOwner node total should be close to EXCL (its retained byte array).
+    const exclId2 = heap.objectsOfClass('ExclusiveOwner')[0];
+    if (exclId2 !== undefined) {
+      const ctRetained = ct.total[exclId2];
+      const ctSelf     = ct.self[exclId2];
+      const SLACK2 = 8192;
+      check('B3: ExclusiveOwner ct.total ≈ EXCL', ctRetained >= EXCL && ctRetained <= EXCL + SLACK2,
+        `ct.total[exclId]=${ctRetained}`);
+      check('B3: ExclusiveOwner ct.self = shallowOf(exclId)',
+        ctSelf === heap.shallowOf(exclId2), `ct.self=${ctSelf}`);
+
+      // funcName via the synthetic stringTable/funcTable must resolve to the class name.
+      const fn = funcName(p, ct.func[exclId2]);
+      check('B3: funcName ends with class name (ExclusiveOwner)',
+        typeof fn === 'string' && fn.endsWith('ExclusiveOwner'), `funcName="${fn}"`);
+    } else {
+      check('B3: ExclusiveOwner found in objectsOfClass', false, 'not found');
+    }
+
+    // prefix/children consistency: for each non-root node, its parent's children list
+    // must contain it, and the child's prefix must match the parent's index.
+    let prefixOk = true;
+    const N2 = heap.objectCount;
+    for (let id = 0; id < N2 && prefixOk; id++) {
+      const par = ct.prefix[id];
+      if (par >= 0 && !ct.children[par].includes(id)) { prefixOk = false; }
+    }
+    check('B3: prefix/children consistent (child in parent.children)',
+      prefixOk, prefixOk ? 'ok' : 'mismatch found');
+  }
 }
 
 console.log(`\n${fail === 0 ? 'PASS' : 'FAIL'}  parse-hprof-test — ${pass} passed, ${fail} failed`);

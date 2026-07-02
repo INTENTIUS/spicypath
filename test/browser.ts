@@ -12,8 +12,8 @@
 //   node test/browser.ts
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
-import { existsSync, mkdtempSync, rmSync, readFileSync } from 'node:fs';
-import { spawn } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, readFileSync, statSync } from 'node:fs';
+import { spawn, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, resolve, extname } from 'node:path';
 import { startMockPprofServer } from './mock-pprof-server.ts';
@@ -1554,6 +1554,101 @@ try {
     const persisted = await evalIn(`window.__app.vausState().lives`);
     check('FG-042: gameConfig (lives) persists via localStorage', persisted === 7, `lives=${persisted}`);
     await evalIn(`window.__app.vausQuit()`);
+  }
+
+  // --- FG-060: heap dump retained-size icicle (JDK-gated) ---
+  // Generate test/out/heap-workload.hprof via the same JDK the parse-hprof-test uses,
+  // drop it into the app, and assert the icicle view + disabled mode buttons + detail click.
+  // Gated so CI machines without a JDK skip cleanly.
+  {
+    const hasJdk = spawnSync('which', ['java'], { encoding: 'utf8' }).status === 0
+                && spawnSync('which', ['javac'], { encoding: 'utf8' }).status === 0;
+    if (!hasJdk) {
+      console.log('FG-060: skip heap smoke — no JDK found');
+    } else {
+      const HPROF_OUT = resolve(ROOT, 'test/out/heap-workload.hprof');
+      const HPROF_SRC = resolve(ROOT, 'test/gen/HprofWorkload.java');
+      const HPROF_CLS = resolve(ROOT, 'test/out/HprofWorkload.class');
+      const OUT_DIR   = resolve(ROOT, 'test/out');
+      if (!existsSync(OUT_DIR)) mkdirSync(OUT_DIR, { recursive: true });
+      const needRegen = !existsSync(HPROF_OUT)
+        || (existsSync(HPROF_SRC) && statSync(HPROF_SRC).mtimeMs > statSync(HPROF_OUT).mtimeMs);
+      if (needRegen) {
+        console.log('FG-060: generating heap-workload.hprof for browser smoke…');
+        if (existsSync(HPROF_OUT)) rmSync(HPROF_OUT);
+        if (existsSync(HPROF_CLS)) rmSync(HPROF_CLS);
+        spawnSync('javac', ['-d', OUT_DIR, HPROF_SRC], { stdio: 'pipe' });
+        spawnSync('java', ['-cp', OUT_DIR, 'HprofWorkload', HPROF_OUT], { stdio: 'pipe' });
+      }
+      if (!existsSync(HPROF_OUT)) {
+        check('FG-060: heap dump generated', false, `missing: ${HPROF_OUT}`);
+      } else {
+        // Re-resolve the file input node (prior blocks may have invalidated the cached nodeId).
+        const { root: hRoot } = await cdp.send('DOM.getDocument', {}, sessionId);
+        const hFile = await cdp.send('DOM.querySelector', { nodeId: hRoot.nodeId, selector: '#file' }, sessionId);
+
+        // Drop the .hprof file into the app.
+        await cdp.send('DOM.setFileInputFiles', { nodeId: hFile.nodeId, files: [HPROF_OUT] }, sessionId);
+        // Wait for the icicle to appear: info shows 'object' (the heap info line, not "loading…").
+        // The completed heap info reads "<label> · heap · N objects · X total", so 'object' only
+        // appears once fully loaded; "loading…" or the prior sampled info will not match.
+        // Poll with enough time for the parse + dominator computation (27k objects).
+        await poll(`window.__fv && window.__fv.p && window.__fv.p.capabilities && window.__fv.p.capabilities.kind === 'heap' && window.__fv.boxes && window.__fv.boxes.length > 0 && /object/.test(document.getElementById('info').innerText||'') ? 1 : 0`, 20000);
+        console.log('FG-060: heap dump loaded into browser');
+
+        const hv = await evalIn(`(()=>{
+          const f = window.__fv;
+          const cv = document.getElementById('cv');
+          const info = document.getElementById('info').innerText || '';
+          const chartDis  = document.getElementById('m-chart').disabled;
+          const sandDis   = document.getElementById('m-sandwich').disabled;
+          const boxes     = f ? f.boxes.length : 0;
+          // Find a box whose funcName contains a known class suffix.
+          let classBox = null;
+          if (f && f.boxes) {
+            for (const b of f.boxes) {
+              const nm = f.p.stringTable[f.p.funcTable.name[b.func]] || '';
+              if (nm.endsWith('ExclusiveOwner') || nm.endsWith('byte[]')) { classBox = nm; break; }
+            }
+          }
+          return { mode: f ? f.mode : null, boxes, chartDis, sandDis, classBox, info };
+        })()`);
+
+        check('FG-060: heap loads in graph mode (icicle)', hv.mode === 'graph', `mode=${hv.mode}`);
+        check('FG-060: heap icicle has boxes', hv.boxes > 0, `boxes=${hv.boxes}`);
+        check('FG-060: heap chart button disabled', hv.chartDis === true, `chartDis=${hv.chartDis}`);
+        check('FG-060: heap sandwich button disabled', hv.sandDis === true, `sandDis=${hv.sandDis}`);
+        check('FG-060: at least one box labelled with a known class', hv.classBox !== null, `classBox=${hv.classBox}`);
+        check('FG-060: info bar shows heap + object count', /heap/.test(hv.info) && /object/.test(hv.info), `info="${hv.info.slice(0,80)}"`);
+
+        // Click the biggest box and assert the detail slide-over opens (retainer path).
+        const hPick = await evalIn(`(()=>{
+          const f = window.__fv;
+          const cv = document.getElementById('cv');
+          const cr = cv.getBoundingClientRect();
+          const ROW = 22;
+          const top = f.contentTop || 0;
+          const b = f.boxes.filter(b => b.depth >= 1 && b.w > 10)[0] || null;
+          if (!b) return null;
+          return { x: cr.left + b.x + b.w / 2, y: cr.top + top + b.depth * ROW + ROW / 2 };
+        })()`);
+        if (hPick) {
+          await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: hPick.x, y: hPick.y, button: 'left', buttons: 1, clickCount: 1 }, sessionId);
+          await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: hPick.x, y: hPick.y, button: 'left', buttons: 0, clickCount: 1 }, sessionId);
+          await sleep(80);
+          const hDet = await evalIn(`(()=>{const el=document.getElementById('detail');return {on:el.classList.contains('on'),text:(el.innerText||'').replace(/\\s+/g,' ').trim().slice(0,80)};})()`);
+          check('FG-060: click opens detail slide-over (retainer path)', hDet.on, `detail.on=${hDet.on} text="${hDet.text}"`);
+        } else {
+          check('FG-060: clickable heap box found', false, 'no box with depth>=1');
+        }
+
+        // After the heap smoke, reload a sampled profile and confirm the sampled view still works.
+        await evalIn(`window.__app.loadSample('samples/node.cpuprofile')`);
+        await poll(`window.__fv && /node\\.cpuprofile/.test(document.getElementById('info').innerText||'') ? 1 : 0`);
+        const hBack = await evalIn(`(()=>{const f=window.__fv;return {boxes:f.boxes.length,mode:f.mode,chartDis:document.getElementById('m-chart').disabled};})()`);
+        check('FG-060: sampled profile still works after heap (no state leak)', hBack.boxes > 0 && hBack.mode !== null, `boxes=${hBack.boxes} mode=${hBack.mode} chartDis=${hBack.chartDis}`);
+      }
+    }
   }
 
 } catch (e: any) {
