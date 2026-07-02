@@ -170,7 +170,7 @@
   <div id="ctxmenu"></div>
   <!-- FG-025 pass 3: brush info overlay — top windowed functions while a lane brush is active -->
   <div id="brushinfo"></div>
-  <div id="empty">drop a profile  ·  <b>samples ▾</b> below  ·  ⌘K commands  ·  ⌘F search</div>
+  <div id="empty">drop a profile  ·  <b>examples ▾</b> up top  ·  ⌘K commands  ·  ⌘F search</div>
   <div id="samplemenu"></div>
   <div id="drop">drop a profile — pprof · .cpuprofile · folded · speedscope (.gz ok)</div>
   <!-- FG-030: source-line panel -->
@@ -198,7 +198,7 @@
       <button id="m-graph" data-mode="graph">Aggregated</button>
       <button id="m-sandwich" data-mode="sandwich">Sandwich</button>
     </span>
-    <span class="tok" id="st-samples" title="load a bundled sample profile">samples ▾</span>
+    <span class="tok" id="st-samples" title="load a bundled example profile">examples ▾</span>
     <span class="tok" id="st-viewtype" title="view type — click to cycle (flame → radial → graph)">flame</span>
     <span class="tok" id="st-weight" title="weight type — click to cycle">—</span>
     <span class="tok" id="st-thread" title="thread selector — click to cycle" style="display:none">all threads</span>
@@ -521,7 +521,7 @@
     const detail = document.getElementById('detail'), stWeight = document.getElementById('st-weight'), stDiff = document.getElementById('st-diff'), stView = document.getElementById('st-viewtype');
     const showDetail = (b) => { detail.classList.toggle('on', !!b); updateSourcePanel(b); }; // slide-over + source panel on frame-select
     const VIEWS = { flame: FlameView, radial: RadialView, graph: GraphView, treemap: TreemapView }; // view-type registry (FG-038/039/051/061)
-    const SAMPLES = [['vert.x (real · timed · deep)', 'samples/real-vertx.speedscope.json'], ['Node CPU (timed · simple)', 'samples/node.cpuprofile'], ['pprof (multi-metric)', 'samples/multi-value.pprof'], ['heap (alloc bytes/objects)', 'samples/alloc-heap.pprof'], ['5k samples (scale)', 'samples/scale-5000.cpuprofile'], ['heap dump — retained sizes (hprof)', 'samples/demo-heap.hprof']];
+    const SAMPLES = [['vert.x (real · timed · deep)', 'samples/real-vertx.speedscope.json'], ['Node CPU (timed · simple)', 'samples/node.cpuprofile'], ['pprof (multi-metric)', 'samples/multi-value.pprof'], ['allocations — where memory is allocated (pprof)', 'samples/alloc-heap.pprof'], ['5k samples (scale)', 'samples/scale-5000.cpuprofile'], ['heap dump — what retains memory (hprof)', 'samples/demo-heap.hprof']];
     let view, profile, mode = 'graph', fileLabel = '', viewType = 'flame', collapsed = true;
     // FG-053: active thread selection. 'all' means the merged view (default when threads>1);
     // a number means that real thread by index. Single-thread profiles always use index 0.
@@ -1466,7 +1466,8 @@
       }
       const r = stSamples.getBoundingClientRect();
       sampleMenu.style.left = Math.round(r.left) + 'px';
-      sampleMenu.style.bottom = Math.round(window.innerHeight - r.top + 6) + 'px';
+      sampleMenu.style.top = Math.round(r.bottom + 4) + 'px'; // status bar is at the TOP → drop down
+      sampleMenu.style.bottom = 'auto';
       sampleMenu.classList.add('on');
     };
     document.addEventListener('mousedown', (e) => { if (sampleMenu.classList.contains('on') && !sampleMenu.contains(e.target) && e.target !== stSamples) closeSampleMenu(); });
