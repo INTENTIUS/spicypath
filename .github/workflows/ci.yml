@@ -36,7 +36,7 @@ jobs:
           for t in run golden ingest-test export-test diff-test otlp-test \
                    sandwich-test sourceline-test metrics-window-test adapters-test \
                    escape-test color-test theme-test vaus-test treemap-layout-test \
-                   parse-jfr-test parse-hprof-test; do
+                   parse-sample-test parse-jfr-test parse-hprof-test; do
             echo "── node test/$t.ts"
             node "test/$t.ts"
           done

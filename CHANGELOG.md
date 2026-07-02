@@ -10,6 +10,14 @@ linkable — the entries record *what* shipped and *why*, not the original commi
 
 ## Enhancements (post-M4)
 
+- FG-055 macOS `sample`(1) / Instruments call-tree — read the indented "Call graph:" text that
+  `sample <pid>` and Instruments emit (a zero-setup macOS profile). `src/parse-sample.js` walks the
+  indentation (tolerating sample's `+ ! : |` tree markers), turns each `Thread_…` block into a real
+  thread, keeps `(in <module>)` as the func's file (so views colour by shared object), and derives
+  self weights from the subtree counts. Content-sniffed by its header so a capture saved as `.txt`
+  isn't mistaken for folded stacks. The other candidates from the issue were already covered
+  (async-profiler `collapsed` / stackcollapse output are standard folded; `perf report` folded is
+  the existing `perf script` path) or are niche and deferred. In-model — no model change.
 - FG-061 Treemap view — a squarified treemap as a fourth view type (alongside flame/radial/graph),
   a second geometry over the same call-node table: for heap dumps it's a retained-size treemap
   (biggest retainers as the largest cells), for sampled profiles a call-tree treemap. Pure

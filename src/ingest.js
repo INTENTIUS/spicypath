@@ -1,6 +1,7 @@
 // Browser/Node ingestion: bytes (+ filename) → canonical Profile. Gunzips via the web
 // DecompressionStream (available in both), detects format by extension then content.
 import { parseFoldedText } from './parse-folded.js';
+import { parseSampleText } from './parse-sample.js';
 import { parseSpeedscopeText } from './parse-speedscope.js';
 import { parseCpuProfileText } from './parse-cpuprofile.js';
 import { parsePprofBytes } from './parse-pprof.js';
@@ -38,6 +39,9 @@ export async function ingestBytes(name, bytes, opts = {}) {
   if (lower.includes('.otlp')) return parseOtlpBytes(data);
   if (/\.(pprof|pb|prof)$/.test(lower)) return parsePprofBytes(data);
   const text = new TextDecoder().decode(data);
+  // macOS `sample`(1) / Instruments call-tree text has a distinctive header — sniff it before the
+  // generic `.txt` → folded route, since a `sample` capture is commonly saved as a .txt file.
+  if (text.startsWith('Analysis of sampling') || /^Call graph:/m.test(text.slice(0, 4096))) return parseSampleText(text);
   if (lower.endsWith('.cpuprofile')) return parseCpuProfileText(text);
   if (lower.includes('speedscope')) return parseSpeedscopeText(text);
   if (/\.(perf|perf-script)$/.test(lower)) return parsePerfScriptText(text);

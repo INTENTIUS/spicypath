@@ -1,0 +1,17 @@
+Analysis of sampling myapp (pid 999) every 1 millisecond
+Process:         myapp [999]
+Call graph:
+    100 Thread_1   DispatchQueue_1: com.apple.main-thread  (serial)
+    + 100 start  (in dyld) + 6992  [0x100000000]
+    +   100 main  (in myapp) + 39  [0x100000100]
+    +     60 foo  (in myapp) + 12  [0x100000200]
+    +       40 bar  (in myapp) + 8  [0x100000300]
+    +     40 baz  (in libwork) + 4  [0x180000400]
+    30 Thread_2: Worker
+    + 30 thread_start  (in libsystem) + 10  [0x180000000]
+    +   30 work  (in myapp) + 20  [0x100000500]
+
+Total number in stack (recursive counted multiple, when >=5):
+        130       main  (in myapp)
+Binary Images:
+       0x100000000 - 0x1FFFFFFFF myapp

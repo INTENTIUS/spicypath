@@ -134,6 +134,7 @@ A field exists only if an operation needs it:
 | **Gecko** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ |
 | **JFR** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ |
 | **OTLP Profiles** | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ |
+| **macOS `sample`(1)** | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ |
 
 The chart/metric columns are `❌` exactly for the aggregated formats (folded, pprof, OTLP) —
 they carry no per-sample time. That is the `hasTiming` flag working as designed: the UI
