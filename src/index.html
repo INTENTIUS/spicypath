@@ -302,6 +302,7 @@
     import { FlameView } from './render-canvas.js';
     import { RadialView } from './view-radial.js';
     import { GraphView } from './view-callgraph.js';
+    import { TreemapView } from './view-treemap.js';
     import { GameView, KONAMI } from './view-vaus.js'; // FG-042
     import { ingestFile, ingestBytes } from './ingest.js';
     import { exportSpeedscope, exportFolded, exportMarkdown } from './export.js';
@@ -512,7 +513,7 @@
     const searchEl = document.getElementById('search'), info = document.getElementById('info');
     const detail = document.getElementById('detail'), stWeight = document.getElementById('st-weight'), stDiff = document.getElementById('st-diff'), stView = document.getElementById('st-viewtype');
     const showDetail = (b) => { detail.classList.toggle('on', !!b); updateSourcePanel(b); }; // slide-over + source panel on frame-select
-    const VIEWS = { flame: FlameView, radial: RadialView, graph: GraphView }; // view-type registry (FG-038/039/051)
+    const VIEWS = { flame: FlameView, radial: RadialView, graph: GraphView, treemap: TreemapView }; // view-type registry (FG-038/039/051/061)
     const SAMPLES = [['vert.x (real · timed · deep)', 'samples/real-vertx.speedscope.json'], ['Node CPU (timed · simple)', 'samples/node.cpuprofile'], ['pprof (multi-metric)', 'samples/multi-value.pprof'], ['heap (alloc bytes/objects)', 'samples/alloc-heap.pprof'], ['5k samples (scale)', 'samples/scale-5000.cpuprofile']];
     let view, profile, mode = 'graph', fileLabel = '', viewType = 'flame', collapsed = true;
     // FG-053: active thread selection. 'all' means the merged view (default when threads>1);
@@ -1363,6 +1364,7 @@
       c.push(['View: Flame (rectangular)', () => setViewType('flame')]);
       c.push(['View: Radial (sunburst)', () => setViewType('radial')]);
       c.push(['View: Call graph', () => setViewType('graph')]);
+      c.push(['View: Treemap (squarified)', () => setViewType('treemap')]);
       if (profile) for (const wt of profile.capabilities.weightTypes) c.push(['Weight: ' + wt, () => setWeight(wt)]);
       // FG-053: thread selector entries (only when profile has > 1 thread)
       if (profile && profile.threads.length > 1) {

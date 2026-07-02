@@ -10,6 +10,12 @@ linkable — the entries record *what* shipped and *why*, not the original commi
 
 ## Enhancements (post-M4)
 
+- FG-061 Treemap view — a squarified treemap as a fourth view type (alongside flame/radial/graph),
+  a second geometry over the same call-node table: for heap dumps it's a retained-size treemap
+  (biggest retainers as the largest cells), for sampled profiles a call-tree treemap. Pure
+  `src/treemap-layout.js` (Bruls/Huizing/van Wijk squarified packing, nested with per-level insets
+  and sub-pixel pruning) + `TreemapView extends BaseView` reusing the theme/tooltip/detail/focus
+  machinery; click a cell to zoom in, double-click to zoom out. No ct/model/renderer changes.
 - FG-060 Heap dumps (HPROF) — a second analysis family. spicypath now reads a JVM `.hprof` heap
   dump: `src/parse-hprof.js` parses the binary object graph (FG-058), `src/heap-dominators.js`
   computes the dominator tree + retained sizes (FG-059), and the shell renders it as a

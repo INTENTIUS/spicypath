@@ -399,10 +399,10 @@ try {
   await sleep(60);
   const gvScaleAfter = await evalIn(`window.__fv.scale`);
   check('FG-051 graph-view: Ctrl-wheel changes scale', gvScaleAfter !== gvScaleBefore, `scale ${gvScaleBefore} → ${gvScaleAfter}`);
-  // cycle back through to flame
-  await evalIn(`document.getElementById('st-viewtype').click()`); // graph → flame
+  // cycle back to flame (use setViewType for stability across cycle lengths)
+  await evalIn(`window.__app.setViewType('flame')`);
   await poll(`window.__fv && window.__fv.constructor.name==='FlameView' ? 1 : 0`);
-  check('FG-051 graph-view: cycles back to flame (3-type cycle)', await evalIn(`window.__fv.constructor.name==='FlameView'`), 'back to flame via graph');
+  check('FG-051 graph-view: cycles back to flame', await evalIn(`window.__fv.constructor.name==='FlameView'`), 'back to flame from graph');
 
   // --- transition fuzz: mode × view-type × diff × search; invariants after EACH step ---
   await evalIn(`window.__app.resetView && window.__app.setViewType('flame')`); // known base: flame
@@ -1650,6 +1650,99 @@ try {
       }
     }
   }
+
+  // --- FG-061: treemap view (squarified) ---
+  // Load a sampled profile, switch to treemap, assert boxes > 0, check mode and interactions.
+  await evalIn(`window.__app.loadSample('samples/node.cpuprofile')`);
+  await poll(`window.__fv && /node\\.cpuprofile/.test(document.getElementById('info').innerText||'') ? 1 : 0`);
+  await evalIn(`window.__app.setViewType('treemap')`);
+  await poll(`window.__fv && window.__fv.constructor.name==='TreemapView' ? 1 : 0`);
+
+  const tm = await evalIn(`(()=>{
+    const v = window.__fv;
+    return {
+      type: v.constructor.name,
+      mode: v.mode,
+      boxes: v.boxes.length,
+      chartOff: document.getElementById('m-chart').disabled,
+      sandOff:  document.getElementById('m-sandwich').disabled,
+      vt: document.getElementById('st-viewtype').innerText,
+    };
+  })()`);
+  check('FG-061 treemap: switches to TreemapView + token reads "treemap"', tm.type === 'TreemapView' && tm.vt === 'treemap', JSON.stringify(tm));
+  check('FG-061 treemap: boxes > 0', tm.boxes > 0, `boxes=${tm.boxes}`);
+  check('FG-061 treemap: mode is graph', tm.mode === 'graph', `mode=${tm.mode}`);
+  check('FG-061 treemap: Timeline + Sandwich buttons disabled (caps)', tm.chartOff && tm.sandOff, JSON.stringify(tm));
+
+  // hover: move over a box and check that hover is set
+  const tmHov = await evalIn(`(()=>{
+    const v = window.__fv;
+    const cv = document.getElementById('cv');
+    const r = cv.getBoundingClientRect();
+    const b = v.boxes.find(b => b.w > 20 && b.h > 20);
+    if (!b) return { skip: true };
+    v._onMove({ clientX: r.left + b.x + b.w / 2, clientY: r.top + b.y + b.h / 2 });
+    return { hover: v.hover != null, func: v.hover ? v.hover.func : null };
+  })()`);
+  check('FG-061 treemap: hover over a cell sets this.hover', tmHov.skip || tmHov.hover, JSON.stringify(tmHov));
+
+  // click to zoom in: clicking a cell should set focus and relayout
+  const tmZoom = await evalIn(`(()=>{
+    const v = window.__fv;
+    const cv = document.getElementById('cv');
+    const r = cv.getBoundingClientRect();
+    // find a cell that has children (depth 0 but not root-only)
+    const b = v.boxes.find(b => b.depth === 0 && b.w > 40 && b.h > 40);
+    if (!b) return { skip: true };
+    const prevFocus = v.focus;
+    const prevBoxes = v.boxes.length;
+    v._onClick({ clientX: r.left + b.x + b.w / 2, clientY: r.top + b.y + b.h / 2 });
+    return { focusChanged: v.focus !== prevFocus, focus: v.focus, boxes: v.boxes.length };
+  })()`);
+  check('FG-061 treemap: clicking a cell zooms in (focus changes)', tmZoom.skip || tmZoom.focusChanged, JSON.stringify(tmZoom));
+
+  // double-click to zoom out
+  if (!tmZoom.skip && tmZoom.focusChanged) {
+    await sleep(50);
+    const tmOut = await evalIn(`(()=>{
+      const v = window.__fv;
+      const prevFocus = v.focus;
+      // double-click on an empty area (0,0) to zoom out
+      v._onDblClick({ clientX: document.getElementById('cv').getBoundingClientRect().left + 1,
+                      clientY: document.getElementById('cv').getBoundingClientRect().top + 1 });
+      return { focusNow: v.focus, changed: v.focus !== prevFocus };
+    })()`);
+    check('FG-061 treemap: double-click zooms out', tmOut.changed, JSON.stringify(tmOut));
+  }
+
+  // search dims non-matching boxes (matchedFuncs set)
+  await evalIn(`window.__app.setSearch('jsonWork')`);
+  await sleep(40);
+  const tmSearch = await evalIn(`(()=>{const v=window.__fv;return {matchedFuncs:v.matchedFuncs!=null,size:v.matchedFuncs?v.matchedFuncs.size:0};})()`);
+  check('FG-061 treemap: search sets matchedFuncs', tmSearch.matchedFuncs, JSON.stringify(tmSearch));
+  await evalIn(`window.__app.setSearch('')`);
+
+  // cycle back to flame through the view-type button
+  await evalIn(`document.getElementById('st-viewtype').click()`);
+  await poll(`window.__fv && window.__fv.constructor.name!=='TreemapView' ? 1 : 0`);
+  check('FG-061 treemap: cycles away via st-viewtype click', await evalIn(`window.__fv.constructor.name!=='TreemapView'`), `constructor=${await evalIn(`window.__fv.constructor.name`)}`);
+
+  // dispose: switching away removes listeners (stale treemap view must not respond to canvas clicks)
+  await evalIn(`(window.__prevTm = window.__fv)`);
+  await evalIn(`window.__app.setViewType('treemap')`);
+  await poll(`window.__fv && window.__fv.constructor.name==='TreemapView' ? 1 : 0`);
+  await evalIn(`(window.__prevTm2 = window.__fv)`);
+  await evalIn(`window.__app.setViewType('flame')`);
+  await poll(`window.__fv && window.__fv.constructor.name==='FlameView' ? 1 : 0`);
+  // stale treemap's hover should not change when we move over the canvas (its listeners are removed)
+  await evalIn(`if(window.__prevTm2) window.__prevTm2.hover = 'SENTINEL'`);
+  const cr2 = await evalIn(`(()=>{const cv=document.getElementById('cv');const r=cv.getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height/2};})()`);
+  await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: cr2.x, y: cr2.y }, sessionId);
+  await sleep(50);
+  check('FG-061 treemap: dispose removes listeners (stale view ignores mouse)', await evalIn(`window.__prevTm2 ? window.__prevTm2.hover === 'SENTINEL' : true`), 'stale hover unchanged');
+
+  await evalIn(`window.__app.setViewType('flame'); window.__app.resetView();`);
+  await poll(`window.__fv && window.__fv.constructor.name==='FlameView' ? 1 : 0`);
 
 } catch (e: any) {
   failures++;
